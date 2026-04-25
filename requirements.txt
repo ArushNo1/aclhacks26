@@ -1,0 +1,36 @@
+# ── Leap Motion ───────────────────────────────────────────────
+# Install Ultraleap Gemini service separately from ultraleap.com
+# then pip install this binding:
+leap                        # Ultraleap Python SDK (LeapPipe)
+
+# ── DeepRacer HTTP API ────────────────────────────────────────
+requests                    # drive commands via PUT /api/drive
+urllib3                     # suppressing SSL warnings (self-signed cert)
+
+# ── MQTT (DeepRacer cams up, commands down, ESP32 signals) ────
+paho-mqtt                   # broker client for all MQTT pub/sub
+
+# ── Computer Vision / Frame Processing ───────────────────────
+opencv-python               # frame capture, resize, preprocessing
+numpy                       # array ops everywhere
+
+# ── ML / Training ─────────────────────────────────────────────
+torch                       # CNN policy (use torch+cu121 if GPU available)
+torchvision                 # transforms, dataset utils
+tensorboard                 # training visualization
+
+# ── Data Recording ────────────────────────────────────────────
+h5py                        # efficient (frame, action) pair storage
+
+# ── PolicyServer + Dashboard API ─────────────────────────────
+fastapi                     # REST + WebSocket endpoints
+uvicorn[standard]           # ASGI server (includes websockets + httptools)
+websockets                  # WS client for pushing frames/telemetry
+python-multipart            # for any file uploads in dashboard
+
+# ── Dashboard UI templating ───────────────────────────────────
+jinja2                      # HTML templates for the web dashboard
+
+# ── Config / Utilities ───────────────────────────────────────
+python-dotenv               # .env for IPs, MQTT broker addr, etc.
+pydantic                    # data validation for API payloads (FastAPI uses it)
