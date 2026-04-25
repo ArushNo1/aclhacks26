@@ -58,12 +58,15 @@ class Car:
         s.v = max(-v_cap, min(v_cap, s.v))
 
         # bicycle update
+        # Sign convention: positive `steer` = turn RIGHT (clockwise looking from
+        # above). With +y up in world, a clockwise yaw is decreasing theta, so
+        # we negate the standard yaw_rate.
         delta = steer * MAX_STEER_RAD
         if abs(delta) < 1e-4:
             s.x += s.v * math.cos(s.theta) * dt
             s.y += s.v * math.sin(s.theta) * dt
         else:
-            yaw_rate = s.v * math.tan(delta) / WHEELBASE_M
+            yaw_rate = -s.v * math.tan(delta) / WHEELBASE_M
             s.theta += yaw_rate * dt
             s.x += s.v * math.cos(s.theta) * dt
             s.y += s.v * math.sin(s.theta) * dt
