@@ -15,7 +15,7 @@ import numpy as np
 
 @dataclass
 class Track:
-    straight_length: float = 8.0   # meters, length of each straight
+    straight_length: float = 4.0   # meters, length of each straight
     centerline_radius: float = 3.0 # meters, radius of the centerline arc at each end
     track_width: float = 1.2       # meters, drivable corridor width
 
@@ -93,13 +93,15 @@ class Track:
         return abs(self.signed_lateral_offset(x, y)) <= self.track_width / 2.0
 
     def start_pose(self, lane_offset: float = 0.0, slot: int = 0) -> Tuple[float, float, float]:
-        """Pose at the start/finish line. `slot` separates two cars longitudinally."""
+        """Pose just past the start/finish line. Both slots start with x>0 so
+        the first crossing of x=0 (going from -x to +x after a full loop)
+        actually represents a completed lap.
+        """
         L = self.straight_length
-        # start/finish is at the middle of the bottom straight, heading +x
-        x = -slot * 0.6  # car length spacing; slot 0 is leader, slot 1 is behind
+        base_x = 1.6                          # 1.6 m past the line
+        x = base_x - slot * 0.6               # slot 0 = leader, slot 1 = chaser
         y = -self.centerline_radius + lane_offset
         theta = 0.0
-        # clamp to bottom straight
         x = max(-L / 2 + 0.2, min(L / 2 - 0.2, x))
         return x, y, theta
 

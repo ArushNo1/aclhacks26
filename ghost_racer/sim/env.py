@@ -85,11 +85,16 @@ class GhostRacerEnv(gym.Env):
 
         return self._obs(self.ego, self.opp), {}
 
-    def step(self, action):
+    def step(self, action, opp_action=None):
+        """If `opp_action` is supplied (e.g. play.py passing the human's hand
+        reading), the opponent's first-person view is NOT rendered, saving the
+        most expensive op in the loop.
+        """
         action = np.asarray(action, dtype=np.float32).reshape(2)
 
-        # opponent action
-        if self.opponent_policy is None:
+        if opp_action is not None:
+            opp_action = np.asarray(opp_action, dtype=np.float32).reshape(2)
+        elif self.opponent_policy is None:
             opp_action = np.array([0.0, 0.4], dtype=np.float32)  # default cruise
         else:
             opp_obs = self._obs(self.opp, self.ego)

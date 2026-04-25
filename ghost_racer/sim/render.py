@@ -51,7 +51,8 @@ def render_first_person(
     forward = FP_FORWARD_FAR_M + (FP_FORWARD_NEAR_M - FP_FORWARD_FAR_M) * v
     # lateral half-width depends on v (perspective trapezoid)
     half_w = FP_LATERAL_FAR_M + (FP_LATERAL_NEAR_M - FP_LATERAL_FAR_M) * v
-    lateral = u * half_w
+    # u=+1 (right of image) -> lateral<0 (right of car, since +y is left of car)
+    lateral = -u * half_w
 
     # apply optional camera pitch jitter (rotates the forward axis around lateral axis)
     pitch = math.radians(dr.camera_pitch_deg)
@@ -79,40 +80,39 @@ def render_first_person(
 
 
 def _classify_ground(track: Track, xw: np.ndarray, yw: np.ndarray, dr: DomainRand) -> np.ndarray:
-    """Vectorized classification of each (xw, yw) pixel into track / line / grass."""
-    H, W = xw.shape
-    flat_x = xw.ravel()
-    flat_y = yw.ravel()
+    """O(1)-per-pixel oval classifier. Each pixel is in one of 4 segments
+    (bottom straight, top straight, right arc, left arc); the segment is
+    selected by sign and range of (x, y) and the lateral distance to the
+    centerline is computed analytically.
+    """
+    L = track.straight_length
+    R = track.centerline_radius
+    W_half = track.track_width / 2.0
+    line_thickness = 0.04
 
-    # Use the track's batched closest-waypoint via broadcasting against waypoints.
-    wp = track.waypoints  # (N, 2)
-    # distances from each query to each waypoint -> too big for huge images; HxW is small (120x160=19200)
-    dx = flat_x[:, None] - wp[None, :, 0]
-    dy = flat_y[:, None] - wp[None, :, 1]
-    d2 = dx * dx + dy * dy
-    nearest = np.argmin(d2, axis=1)
-    p = wp[nearest]
-    nxt = wp[(nearest + 1) % len(wp)]
-    tangent = nxt - p
-    norm = np.linalg.norm(tangent, axis=1, keepdims=True) + 1e-9
-    tangent = tangent / norm
-    normal = np.stack([-tangent[:, 1], tangent[:, 0]], axis=1)
-    rel = np.stack([flat_x - p[:, 0], flat_y - p[:, 1]], axis=1)
-    lateral = np.sum(rel * normal, axis=1)
+    in_straight_x = (xw >= -L / 2.0) & (xw <= L / 2.0)
 
-    on_track = np.abs(lateral) <= track.track_width / 2.0
-    on_centerline = np.abs(lateral) <= 0.04  # 4 cm white dashed line
-    # dashed: alternate using nearest waypoint index
-    dashed_visible = (nearest % 8) < 4
-    on_centerline &= dashed_visible
-    on_edge = (np.abs(np.abs(lateral) - track.track_width / 2.0) < 0.04)
+    # straight regions: distance to nearest centerline (y = ±R)
+    d_straight = np.minimum(np.abs(yw - R), np.abs(yw + R))
 
-    img = np.zeros((H * W, 3), dtype=np.uint8)
+    # arc regions: distance to nearest arc centerline (radius R around (±L/2, 0))
+    use_right_arc = xw > 0
+    cx = np.where(use_right_arc, L / 2.0, -L / 2.0)
+    dist_to_center = np.sqrt((xw - cx) ** 2 + yw ** 2)
+    d_arc = np.abs(dist_to_center - R)
+
+    d = np.where(in_straight_x, d_straight, d_arc)
+
+    on_track = d <= W_half
+    on_edge = np.abs(d - W_half) < line_thickness
+    on_centerline = d < line_thickness
+
+    img = np.empty(xw.shape + (3,), dtype=np.uint8)
     img[:] = dr.grass_color
     img[on_track] = dr.track_color
     img[on_edge] = dr.line_color
     img[on_centerline] = dr.line_color
-    return img.reshape(H, W, 3)
+    return img
 
 
 def _paint_opponent(img: np.ndarray, ego: Car, opp: Car, H: int, W: int) -> None:
@@ -132,7 +132,7 @@ def _paint_opponent(img: np.ndarray, ego: Car, opp: Car, H: int, W: int) -> None
     half_w = FP_LATERAL_FAR_M + (FP_LATERAL_NEAR_M - FP_LATERAL_FAR_M) * v_norm
     if half_w <= 0:
         return
-    u_norm = yc / half_w
+    u_norm = -yc / half_w  # match the lateral flip in render_first_person
     if abs(u_norm) > 1.0:
         return
 
