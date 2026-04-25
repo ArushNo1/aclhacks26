@@ -7,15 +7,18 @@ set -eo pipefail
 source /opt/ros/foxy/setup.bash
 source /opt/aws/deepracer/lib/setup.bash
 
+
 # Free /dev/video0 — AWS camera_node holds it but never publishes.
 sudo pkill -f camera_node || true
 sleep 1
 
 cd "$(dirname "$0")"
 
-: "${CAR_ID:=1}"
-: "${MQTT_BROKER:=10.11.0.203}"
-export CAR_ID MQTT_BROKER
+# Config comes from .env (next to this script). See .env.example.
+if [ ! -f .env ]; then
+    echo "ERROR: car_bridge/.env not found. Copy .env.example and fill it in."
+    exit 1
+fi
 
 python3 camera_publisher.py &
 CAM_PID=$!

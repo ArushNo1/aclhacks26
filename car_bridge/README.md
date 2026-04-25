@@ -34,13 +34,25 @@ Confirm broker reachability from the car:
 mosquitto_pub -h <laptop-ip> -t test -m hi
 ```
 
+## Configure
+
+Copy `.env.example` to `.env` next to the scripts and fill in the values:
+
+```
+cp .env.example .env
+$EDITOR .env
+```
+
+`DEVICE_PASSWORD` is the device-console password from the sticker on the
+bottom of the car.
+
 ## Run the bridge
 
 On the car:
 
 ```
-cd ~/aclhacks26/car_bridge          # wherever you cloned/scp'd the repo
-CAR_ID=1 MQTT_BROKER=<laptop-ip> ./start_bridge.sh
+cd ~/car_bridge
+./start_bridge.sh
 ```
 
 That kills the wedged AWS `camera_node`, then starts:

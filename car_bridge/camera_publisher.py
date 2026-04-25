@@ -4,6 +4,9 @@ import os
 import time
 import cv2
 import paho.mqtt.client as mqtt
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 CAR_ID = os.environ.get("CAR_ID", "1")
 CAM_DEV = int(os.environ.get("CAM_DEV", "0"))
