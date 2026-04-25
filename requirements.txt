@@ -2,3 +2,10 @@ opencv-python
 mediapipe==0.10.18
 numpy
 paho-mqtt
+pygame>=2.5
+gymnasium>=0.29
+torch>=2.1
+stable-baselines3>=2.3
+onnx>=1.15
+onnxruntime>=1.17
+tensorboard
