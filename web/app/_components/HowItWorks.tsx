@@ -24,9 +24,9 @@ const steps = [
 
 export default function HowItWorks() {
   return (
-    <section className="bg-black px-4 py-24">
+    <section id="how-it-works" className="bg-black px-4 py-24">
       <div className="mx-auto max-w-6xl">
-        <h2 className="mb-16 text-center font-mono text-sm font-bold tracking-widest text-cyan-500">
+        <h2 className="mb-10 text-center font-mono text-sm font-bold tracking-widest text-cyan-500">
           HOW IT WORKS
         </h2>
 
@@ -34,11 +34,11 @@ export default function HowItWorks() {
           {steps.map((step, i) => (
             <div key={step.act} className="relative">
               {i < steps.length - 1 && (
-                <div className="absolute right-0 top-1/2 z-10 hidden -translate-y-1/2 translate-x-1/2 font-mono text-2xl text-cyan-800 md:block">
+                <div className="absolute right-0 top-1/2 z-10 hidden -translate-y-1/2 translate-x-1/2 font-mono text-xl text-cyan-600 md:block">
                   →
                 </div>
               )}
-              <div className="h-full rounded-lg border border-zinc-800 bg-zinc-950 p-8 transition-colors hover:border-cyan-500/30">
+              <div className="group h-full rounded-lg border border-zinc-800 bg-zinc-950 p-8 transition-all hover:border-cyan-500/40 hover:shadow-[0_0_24px_rgba(0,255,255,0.04)]">
                 <div className="mb-3 font-mono text-xs font-bold tracking-widest text-cyan-500">
                   {step.act}
                 </div>
@@ -46,7 +46,7 @@ export default function HowItWorks() {
                 <h3 className="mb-3 font-mono text-xl font-black text-white">
                   {step.title}
                 </h3>
-                <p className="text-sm leading-relaxed text-zinc-500">
+                <p className="text-sm leading-relaxed text-zinc-400">
                   {step.description}
                 </p>
               </div>
