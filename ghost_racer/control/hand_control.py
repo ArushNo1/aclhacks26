@@ -30,7 +30,7 @@ import mediapipe as mp
 
 
 SMOOTH_ALPHA = 0.35       # 0=no smoothing, 1=full inertia
-STEER_EXPONENT = 2.0      # quadratic by default; increase for softer steering
+STEER_EXPONENT = 3.0      # cubic curve; raise for even softer center, lower for sharper
 DEFAULT_CALIB_PATH = "ghost_racer/data/hand_calibration.json"
 
 
@@ -50,6 +50,9 @@ class HandCalibration:
         Direction-agnostic mapping: regardless of whether L<C<R or L>C>R
         numerically, raw=L returns -1 and raw=R returns +1. This makes the
         calibration robust to mirror flips.
+
+        The sensitivity curve uses the module-level STEER_EXPONENT constant
+        (not the saved field) so changing that constant is the only knob.
         """
         L = self.left_tilt_rad
         C = self.center_tilt_rad
@@ -66,7 +69,7 @@ class HandCalibration:
                 return 0.0
             s = (raw_tilt_rad - C) / denom         # 0 at C, +1 at R
         s = max(-1.0, min(1.0, s))
-        return math.copysign(abs(s) ** self.steer_exponent, s)
+        return math.copysign(abs(s) ** STEER_EXPONENT, s)
 
     def map_throttle(self, raw_openness: float) -> float:
         denom = (self.open_openness - self.closed_openness) or 1e-6
