@@ -1,1 +1,20 @@
 /.*/
+!/.gitignore
+!/.claude/
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
