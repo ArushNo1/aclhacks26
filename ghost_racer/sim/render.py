@@ -156,7 +156,7 @@ def _paint_opponent(img: np.ndarray, ego: Car, opp: Car, H: int, W: int) -> None
 PLAYER_CAM_HEIGHT_M = 0.22       # cam this far above the ground
 PLAYER_CAM_BACK_M = 0.10         # cam behind car center (third-person feel)
 PLAYER_CAM_PITCH_DEG = -10.0     # tilt down slightly
-PLAYER_CAM_FOV_DEG = 80.0
+PLAYER_CAM_FOV_DEG = 125.0
 SKY_COLOR = np.array([135, 180, 220], dtype=np.uint8)
 
 
