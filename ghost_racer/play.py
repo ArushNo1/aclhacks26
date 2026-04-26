@@ -139,10 +139,9 @@ def main():
     ap.add_argument("--record", action="store_true")
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--skip-calibrate", action="store_true",
-                    help="Skip hand calibration and use the saved file (or defaults). "
-                         "Default is to always calibrate at the start of every session.")
+                    help="Skip the startup prompt and always use the saved profile.")
     ap.add_argument("--calibrate", action="store_true",
-                    help="(Legacy, no-op — calibration runs by default; use --skip-calibrate to bypass.)")
+                    help="Force recalibration on startup (skips the use-saved prompt).")
     ap.add_argument("--auto-train", action="store_true",
                     help="Retrain BC after each round on the recorded data.")
     ap.add_argument("--data-dir", default="ghost_racer/data")
@@ -166,15 +165,34 @@ def main():
         print(e, file=sys.stderr)
         sys.exit(1)
 
-    should_calibrate = not args.skip_calibrate or not os.path.exists(DEFAULT_CALIB_PATH)
+    has_saved = os.path.exists(DEFAULT_CALIB_PATH) and ctrl.calibration.has_arm_data
+    if args.calibrate:
+        should_calibrate = True
+    elif args.skip_calibrate and has_saved:
+        should_calibrate = False
+        print(f"--skip-calibrate set; using saved calibration at {DEFAULT_CALIB_PATH}")
+    elif not has_saved:
+        should_calibrate = True
+        if os.path.exists(DEFAULT_CALIB_PATH):
+            print("[note] saved profile predates arm-rotation steering; recalibrating.")
+        else:
+            print("no saved calibration found; running first-time calibration.")
+    else:
+        try:
+            use_saved = ctrl.prompt_use_saved(calib_path=DEFAULT_CALIB_PATH)
+        except KeyboardInterrupt:
+            print("aborted at startup", file=sys.stderr)
+            ctrl.close()
+            sys.exit(0)
+        should_calibrate = not use_saved
+        print("user chose:", "RECALIBRATE" if should_calibrate else f"USE SAVED ({DEFAULT_CALIB_PATH})")
+
     if should_calibrate:
         try:
             ctrl.run_calibration()
-            print("calibration done.")
+            print(f"calibration done; weights saved to {DEFAULT_CALIB_PATH}")
         except KeyboardInterrupt:
             print("calibration aborted; using previous values", file=sys.stderr)
-    else:
-        print(f"--skip-calibrate set; using saved calibration at {DEFAULT_CALIB_PATH}")
 
     # ------------------------------------------------------------------
     # STEP 2 — load the rest (heavy imports deferred until now so the
@@ -308,25 +326,34 @@ def main():
         spec_surface = pygame.transform.scale(spec_surface, (SPECTATOR_PX, SPECTATOR_PX))
         screen.blit(spec_surface, (20, 20))
 
-        # right column: webcam (top), AI camera (middle)
+        # right column: player 3D nav cam (top), webcam (middle), AI camera (bottom)
         right_y = 20
 
-        # 1) webcam with overlay
+        # 1) player 3D camera — the human's navigation view
+        player_view = env.render_player_3d(H=240, W=320)
+        player_surf = pygame.surfarray.make_surface(np.transpose(player_view, (1, 0, 2)))
+        player_surf = fit_to_panel(player_surf, RIGHT_COL_W, 320)
+        screen.blit(small_font.render("YOUR VIEW (3D nav camera)", True, (200, 200, 200)),
+                    (RIGHT_COL_X, right_y))
+        screen.blit(player_surf, (RIGHT_COL_X, right_y + 18))
+        right_y += player_surf.get_height() + 18 + PANEL_GAP
+
+        # 2) webcam with overlay
         if cam_frame is not None:
             overlaid = ctrl.overlay(cam_frame.copy(), reading)
             cam_surf = cv_to_pygame(overlaid)
-            cam_surf = fit_to_panel(cam_surf, RIGHT_COL_W, 360)
-            screen.blit(small_font.render("YOUR HAND (webcam)", True, (200, 200, 200)),
+            cam_surf = fit_to_panel(cam_surf, RIGHT_COL_W // 2 - 6, 160)
+            screen.blit(small_font.render("hand (webcam)", True, (200, 200, 200)),
                         (RIGHT_COL_X, right_y))
             screen.blit(cam_surf, (RIGHT_COL_X, right_y + 18))
-            right_y += cam_surf.get_height() + 18 + PANEL_GAP
 
-        # 2) AI camera preview - reuse the cached ai_obs (post-step), no re-render
-        ai_surf = pygame.surfarray.make_surface(np.transpose(ai_obs, (1, 0, 2)))
-        ai_surf = fit_to_panel(ai_surf, RIGHT_COL_W, WINDOW_H - right_y - 60)
-        screen.blit(small_font.render("AI camera (policy input)", True, (200, 200, 200)),
-                    (RIGHT_COL_X, right_y))
-        screen.blit(ai_surf, (RIGHT_COL_X, right_y + 18))
+            # 3) AI camera preview — alongside the webcam
+            ai_x = RIGHT_COL_X + RIGHT_COL_W // 2 + 6
+            ai_surf = pygame.surfarray.make_surface(np.transpose(ai_obs, (1, 0, 2)))
+            ai_surf = fit_to_panel(ai_surf, RIGHT_COL_W // 2 - 6, 160)
+            screen.blit(small_font.render("AI camera (policy input)", True, (200, 200, 200)),
+                        (ai_x, right_y))
+            screen.blit(ai_surf, (ai_x, right_y + 18))
 
         # ---------------- HUD ----------------
         now = time.time()

@@ -103,6 +103,11 @@ class GhostRacerEnv(gym.Env):
         self.ego.step(action[0], action[1], self.dt)
         self.opp.step(opp_action[0], opp_action[1], self.dt)
 
+        # hard track walls: clamp both cars back inside the corridor and
+        # bleed speed on contact so they can't drive through the grass
+        ego_hit = self._enforce_walls(self.ego)
+        opp_hit = self._enforce_walls(self.opp)
+
         # progress and lap detection
         prog_ego = self._lap_progress(self.ego, self._last_xy_ego, self._prev_progress_ego, "ego")
         prog_opp = self._lap_progress(self.opp, self._last_xy_opp, self._prev_progress_opp, "opp")
@@ -113,13 +118,14 @@ class GhostRacerEnv(gym.Env):
         d_opp_m = d_opp * self.track.total_length
 
         # reward shaping
-        off_track_ego = not self.track.is_on_track(*self.ego.position)
+        # is_on_track is always True now (we clamp), so we score wall *contact*
+        off_track_ego = ego_hit
         collision = cars_collide(self.ego, self.opp)
 
         reward = 0.0
         reward += 1.0 * d_ego_m                            # progress
         reward += 0.5 * (d_ego_m - d_opp_m)                # closing the gap
-        reward -= 0.2 if off_track_ego else 0.0            # off-track penalty
+        reward -= 0.3 if ego_hit else 0.0                  # wall-contact penalty
         reward -= 1.0 if collision else 0.0                # don't bump
 
         # overtake bonus: ego's cumulative lap-progress passes opp's
@@ -151,6 +157,17 @@ class GhostRacerEnv(gym.Env):
         return obs, float(reward), terminated, truncated, info
 
     # ------------------------------------------------------------------ internal
+    def _enforce_walls(self, car: Car) -> bool:
+        """Push the car back inside the track corridor if it left, and
+        scrub speed on contact. Returns True if a wall was hit."""
+        nx, ny, hit = self.track.clamp_to_corridor(*car.position)
+        if hit:
+            car.state.x = nx
+            car.state.y = ny
+            # scrub speed; preserves sign so the car doesn't reverse off the wall
+            car.state.v *= 0.35
+        return hit
+
     def _obs(self, ego: Car, opp: Car) -> np.ndarray:
         return render_first_person(self.track, ego, opp, self.dr, H=self.obs_h, W=self.obs_w)
 
@@ -167,3 +184,10 @@ class GhostRacerEnv(gym.Env):
     def render(self):
         from .render import render_spectator
         return render_spectator(self.track, [self.ego, self.opp], self.dr)
+
+    def render_player_3d(self, H: int = 240, W: int = 320) -> np.ndarray:
+        """Perspective 3D camera mounted on the human-driven car (opp slot).
+        Used as a navigation aid in the human window — the AI policy keeps
+        its cheap bird's-eye observation."""
+        from .render import render_player_3d
+        return render_player_3d(self.track, self.opp, self.ego, self.dr, H=H, W=W)

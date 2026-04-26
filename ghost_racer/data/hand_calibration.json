@@ -1,8 +1,10 @@
 {
-  "center_tilt_rad": 0.31044114652918164,
-  "left_tilt_rad": -0.4766478564312686,
-  "right_tilt_rad": 1.1145079096994648,
-  "closed_openness": 0.39297841010575346,
-  "open_openness": 1.6134512830075773,
-  "steer_exponent": 2.0
+  "pivot_x": 0.764663430777463,
+  "pivot_y": 1.123861067945307,
+  "center_arm_rad": -1.5707963267948966,
+  "left_arm_rad": -2.2406565771986506,
+  "right_arm_rad": -1.3842644010276703,
+  "closed_openness": 0.4189054955653811,
+  "open_openness": 1.3348550014292075,
+  "steer_exponent": 5.0
 }

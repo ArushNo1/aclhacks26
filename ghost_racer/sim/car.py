@@ -12,8 +12,8 @@ from dataclasses import dataclass
 # --- physical constants (DeepRacer-ish) ---
 WHEELBASE_M = 0.165       # ~16.5 cm
 MAX_STEER_RAD = 0.52      # ~30 deg, mech limit
-MAX_SPEED_MPS = 2.0       # cap; DeepRacer race-mode tops out ~2 m/s
-ACCEL_MPS2 = 3.0          # full-throttle accel before drag
+MAX_SPEED_MPS = 1.0       # cap; DeepRacer race-mode tops out ~2 m/s
+ACCEL_MPS2 = 2.0          # full-throttle accel before drag
 DRAG_COEFF = 0.6          # 1/s, linear drag => v_terminal ~ a/k
 REVERSE_FACTOR = 0.4      # reverse is slower than forward
 CAR_LENGTH_M = 0.30
