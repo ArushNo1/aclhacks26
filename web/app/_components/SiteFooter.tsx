@@ -4,7 +4,7 @@ export default function SiteFooter() {
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-8 text-sm text-[var(--color-text-subtle)] sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <span aria-hidden className="block h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
-          <span className="font-semibold text-[var(--color-text-muted)]">Ghost Racer</span>
+          <span className="font-semibold text-[var(--color-text-muted)]">67 RACER</span>
           <span aria-hidden>·</span>
           <span>ACL Hacks 2026</span>
         </div>

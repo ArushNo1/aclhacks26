@@ -16,7 +16,7 @@ import { CalibrationCard } from './CalibrationCard';
 const RIGHT_RAIL = 360;          // hand panel width
 const TELEM_HEIGHT = 78;         // bottom stat strip height
 
-export function ActCapture() {
+export function ActCapture({ povSource = 'sim' }: { povSource?: 'sim' | 'car' }) {
   const cap = useCapture();
   const hand = useHand();
   const race = useRace();
@@ -95,7 +95,7 @@ export function ActCapture() {
         />
 
         {/* Player POV fills the full content row */}
-        <PlayerPOV car1Lap={car1Lap} car2Lap={car2Lap} />
+        <PlayerPOV car1Lap={car1Lap} car2Lap={car2Lap} povSource={povSource} />
 
         <TelemetryStrip
           frames={frames}
@@ -201,7 +201,19 @@ function Header({
 }
 
 // ─── Player POV ─────────────────────────────────────────────────────────────
-function PlayerPOV({ car1Lap, car2Lap }: { car1Lap: number; car2Lap: number }) {
+function PlayerPOV({
+  car1Lap,
+  car2Lap,
+  povSource,
+}: {
+  car1Lap: number;
+  car2Lap: number;
+  povSource: 'sim' | 'car';
+}) {
+  const isCar = povSource === 'car';
+  const src = isCar ? '/stream/car/1.mjpg' : '/stream/player.mjpg';
+  const label = isCar ? 'PLAYER · CAR 1 · LIVE' : 'PLAYER · CAR 1';
+  const resolution = isCar ? 'webcam' : '320×240';
   return (
     <div style={{
       display: 'flex',
@@ -217,6 +229,9 @@ function PlayerPOV({ car1Lap, car2Lap }: { car1Lap: number; car2Lap: number }) {
       }}>
         <Label style={{ color: C1 }}>YOUR POV</Label>
         <Label style={{ color: 'rgba(255,255,255,0.5)' }}>LAP {car1Lap}</Label>
+        <Label style={{ color: isCar ? '#22c55e' : 'rgba(255,255,255,0.4)' }}>
+          {isCar ? 'SOURCE · TRACK' : 'SOURCE · SIM'}
+        </Label>
         <div style={{ flex: 1 }} />
         <Label>AI LAP {car2Lap}</Label>
       </div>
@@ -227,10 +242,11 @@ function PlayerPOV({ car1Lap, car2Lap }: { car1Lap: number; car2Lap: number }) {
         overflow: 'hidden',
       }}>
         <CameraFeed
+          key={src}
           color={C1}
-          label="PLAYER · CAR 1"
-          src="/stream/player.mjpg"
-          resolution="320×240"
+          label={label}
+          src={src}
+          resolution={resolution}
           style={{ height: '100%' }}
         />
       </div>

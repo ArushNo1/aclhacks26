@@ -1,4 +1,4 @@
-# GHOST RACER — Implementation Plan
+# 67 RACER — Implementation Plan
 
 **Project:** Live behavioral cloning showdown — two AWS DeepRacers running cloned human driving policies against each other.
 **Theme:** Clones (ACL Hacks 26)

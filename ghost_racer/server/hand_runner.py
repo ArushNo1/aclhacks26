@@ -42,12 +42,12 @@ CAM_INDEX_DEFAULT = int(os.environ.get("GHOST_RACER_CAM", "0"))
 # Order must match HandController.run_calibration so saved profiles look the
 # same across the cv2 and browser flows.
 STEP_PLAN: List[Tuple[str, str, str]] = [
-    ("L", "neutral",  "LEFT HAND only: hold at COMFORTABLE neutral distance, then press CAPTURE."),
-    ("L", "forward",  "LEFT HAND only: push CLOSE to camera (full L forward), then press CAPTURE."),
-    ("L", "backward", "LEFT HAND only: pull FAR from camera (full L reverse), then press CAPTURE."),
-    ("R", "neutral",  "RIGHT HAND only: hold at COMFORTABLE neutral distance, then press CAPTURE."),
-    ("R", "forward",  "RIGHT HAND only: push CLOSE to camera (full R forward), then press CAPTURE."),
-    ("R", "backward", "RIGHT HAND only: pull FAR from camera (full R reverse), then press CAPTURE."),
+    ("L", "neutral",  "LEFT HAND only: hold at COMFORTABLE resting height, then press CAPTURE."),
+    ("L", "forward",  "LEFT HAND only: lift hand UP (full L forward), then press CAPTURE."),
+    ("L", "backward", "LEFT HAND only: drop hand DOWN (full L reverse), then press CAPTURE."),
+    ("R", "neutral",  "RIGHT HAND only: hold at COMFORTABLE resting height, then press CAPTURE."),
+    ("R", "forward",  "RIGHT HAND only: lift hand UP (full R forward), then press CAPTURE."),
+    ("R", "backward", "RIGHT HAND only: drop hand DOWN (full R reverse), then press CAPTURE."),
 ]
 
 

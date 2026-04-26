@@ -4,17 +4,20 @@ Webcam + MediaPipe Hands -> calibrated (steer, throttle), two hands, TANK DRIVE.
 Mapping
 -------
 Each hand independently controls its side of the vehicle (like a tracked
-vehicle / skid steer). The depth of each hand (how close it is to the
-camera) drives that side's throttle, measured as the convex-hull diameter
-of the 21 hand landmarks in normalized image coords — bigger on screen =
-closer = more throttle.
+vehicle / skid steer). The vertical height of each hand drives that
+side's throttle, measured as `1 - mean_y` of the 21 hand landmarks in
+normalized image coords — higher on screen = more throttle.
 
-- LEFT  hand size -> left-tread throttle  in [-1, +1]
-- RIGHT hand size -> right-tread throttle in [-1, +1]
+- LEFT  hand height -> left-tread throttle  in [-1, +1]
+- RIGHT hand height -> right-tread throttle in [-1, +1]
 
-Both hands close to camera = full forward.  Both pulled back = full
-reverse.  One hand close and the other neutral (or far) creates a
-differential, which the env consumes as a steering input.
+Both hands lifted = full forward.  Both lowered = full reverse.  One
+hand high and the other neutral (or low) creates a differential, which
+the env consumes as a steering input.
+
+The legacy *_size field names are retained for backward compatibility
+with the saved calibration JSON, the SimState wire format, and the
+frontend dashboard — values now represent elevation, not hand diameter.
 
 We translate the two side throttles into the (steer, throttle) action the
 sim expects:
@@ -72,24 +75,25 @@ def _shape_steer(diff: float) -> float:
 # ------------------------------------------------------------------ calibration
 @dataclass
 class HandCalibration:
-    """Per-user hand-size anchors for tank-drive throttle, one set per hand.
-    Sizes are convex-hull diameters in normalized image coords; close to
-    camera = larger size = forward throttle."""
+    """Per-user hand-height anchors for tank-drive throttle, one set per
+    hand. Stored values are elevations (`1 - mean_y`) in normalized image
+    coords; higher on screen = larger value = forward throttle. Field
+    names retain the historical *_size suffix for wire compatibility."""
     # left tread
-    left_neutral_size: float = 0.30
-    left_forward_size: float = 0.55  # close to camera
-    left_backward_size: float = 0.18  # far from camera
+    left_neutral_size: float = 0.50
+    left_forward_size: float = 0.85   # hand lifted high
+    left_backward_size: float = 0.15  # hand lowered
     # right tread
-    right_neutral_size: float = 0.30
-    right_forward_size: float = 0.55
-    right_backward_size: float = 0.18
+    right_neutral_size: float = 0.50
+    right_forward_size: float = 0.85
+    right_backward_size: float = 0.15
     steer_exponent: float = STEER_EXPONENT
 
     @staticmethod
     def _map_side(raw_size: float, neutral: float, forward: float, backward: float) -> float:
-        """Map a single hand's convex-hull diameter to side-throttle in
-        [-1, +1]. Direction-agnostic so forward/backward can sit on either
-        side of neutral (forward is normally larger but we don't assume it)."""
+        """Map a single hand's elevation to side-throttle in [-1, +1].
+        Direction-agnostic so forward/backward can sit on either side of
+        neutral (forward is normally larger but we don't assume it)."""
         df = forward - neutral
         db = backward - neutral
         dr = raw_size - neutral
@@ -160,17 +164,20 @@ class HandReading:
     has_right: bool = False
     left_throttle: float = 0.0
     right_throttle: float = 0.0
-    raw_left_size: float = 0.30
-    raw_right_size: float = 0.30
+    raw_left_size: float = 0.50
+    raw_right_size: float = 0.50
 
 
 # ------------------------------------------------------------------ feature extraction
-def hand_size(lms) -> float:
-    """Convex-hull diameter (max pairwise distance) over the 21 hand
-    landmarks in normalized image coords. Larger = closer to camera."""
-    pts = np.asarray([[lm.x, lm.y] for lm in lms], dtype=np.float32)
-    diffs = pts[:, None, :] - pts[None, :, :]
-    return float(np.sqrt((diffs * diffs).sum(-1)).max())
+def hand_height(lms) -> float:
+    """Elevation (`1 - mean_y`) of the 21 hand landmarks in normalized
+    image coords. Larger = higher on screen = hand lifted up."""
+    ys = sum(lm.y for lm in lms) / len(lms)
+    return float(max(0.0, min(1.0, 1.0 - ys)))
+
+
+# Legacy alias: callers (incl. server hand_runner) still import this name.
+hand_size = hand_height
 
 
 def hand_center(lms) -> Tuple[float, float]:
@@ -320,49 +327,52 @@ class HandController:
         return self.last, frame
 
     def overlay(self, frame: np.ndarray, reading: HandReading) -> np.ndarray:
-        """Draw per-side size rings + summary steer/throttle bars.
-        Each detected hand gets a live ring (radius proportional to current
-        convex-hull diameter) plus dashed reference rings at the calibrated
-        forward (close, green) and backward (far, blue) sizes."""
+        """Draw per-side height guides + summary steer/throttle bars.
+        Each side of the frame gets horizontal reference lines at the
+        calibrated forward (green, high) and backward (blue, low)
+        elevations, plus a live marker at the detected hand centroid."""
         h, w = frame.shape[:2]
         c = self.calibration
 
-        # Sizes were captured in normalized image coords (max coord = 1.0
-        # along the larger image axis). Scale to pixels by the frame width
-        # so visual radii roughly match what the calibration captured.
-        scale = float(w)
+        def elev_to_y(elev: float) -> int:
+            return int(max(0.0, min(1.0, 1.0 - elev)) * h)
 
         def draw_side(label: str, color,
                       neutral: float, forward: float, backward: float,
                       center: Optional[Tuple[float, float]],
-                      live_size: float, side_throttle: float):
-            if center is None:
-                return
-            cx_px = int(center[0] * w)
-            cy_px = int(center[1] * h)
-            r_live = max(4, int(live_size * scale * 0.5))
-            r_fwd = max(4, int(forward * scale * 0.5))
-            r_back = max(4, int(backward * scale * 0.5))
-            # reference rings (dashed via two arcs)
-            cv2.circle(frame, (cx_px, cy_px), r_fwd, (60, 220, 60), 1, cv2.LINE_AA)
-            cv2.circle(frame, (cx_px, cy_px), r_back, (60, 60, 220), 1, cv2.LINE_AA)
-            # live hand-size ring
-            cv2.circle(frame, (cx_px, cy_px), r_live, color, 2, cv2.LINE_AA)
-            cv2.putText(frame, f"{label}  size={live_size:.2f}  t={side_throttle:+.2f}",
-                        (cx_px - 70, cy_px - r_live - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+                      live_elev: float, side_throttle: float,
+                      x0: int, x1: int):
+            y_fwd = elev_to_y(forward)
+            y_back = elev_to_y(backward)
+            y_neu = elev_to_y(neutral)
+            cv2.line(frame, (x0, y_fwd), (x1, y_fwd), (60, 220, 60), 1, cv2.LINE_AA)
+            cv2.line(frame, (x0, y_back), (x1, y_back), (60, 60, 220), 1, cv2.LINE_AA)
+            cv2.line(frame, (x0, y_neu), (x1, y_neu), (140, 140, 140), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"{label} fwd", (x0 + 4, y_fwd - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (60, 220, 60), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"{label} rev", (x0 + 4, y_back + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (60, 60, 220), 1, cv2.LINE_AA)
+            if center is not None:
+                cx_px = int(center[0] * w)
+                cy_px = int(center[1] * h)
+                cv2.circle(frame, (cx_px, cy_px), 8, color, -1, cv2.LINE_AA)
+                cv2.putText(frame, f"{label}  h={live_elev:.2f}  t={side_throttle:+.2f}",
+                            (cx_px - 70, cy_px - 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
         draw_side("L", (0, 200, 255),
                   c.left_neutral_size, c.left_forward_size, c.left_backward_size,
-                  self.last_left_center, reading.raw_left_size, reading.left_throttle)
+                  self.last_left_center, reading.raw_left_size, reading.left_throttle,
+                  0, w // 2)
         draw_side("R", (60, 220, 60),
                   c.right_neutral_size, c.right_forward_size, c.right_backward_size,
-                  self.last_right_center, reading.raw_right_size, reading.right_throttle)
+                  self.last_right_center, reading.raw_right_size, reading.right_throttle,
+                  w // 2, w)
 
         # legend in the top-right
-        cv2.putText(frame, "green = full fwd size", (w - 220, h - 60),
+        cv2.putText(frame, "green = lift hand UP (fwd)", (w - 240, h - 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 220, 60), 1, cv2.LINE_AA)
-        cv2.putText(frame, "blue  = full rev size", (w - 220, h - 44),
+        cv2.putText(frame, "blue  = drop hand DOWN (rev)", (w - 240, h - 44),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 60, 220), 1, cv2.LINE_AA)
 
         # summary bars (steer horizontal at bottom, throttle vertical right-of-center)
@@ -410,9 +420,9 @@ class HandController:
         c = self.calibration
         info = [
             f"Saved hand profile found: {calib_path}",
-            f"  L hand size: neutral={c.left_neutral_size:.2f}  "
+            f"  L hand height: neutral={c.left_neutral_size:.2f}  "
             f"fwd={c.left_forward_size:.2f}  rev={c.left_backward_size:.2f}",
-            f"  R hand size: neutral={c.right_neutral_size:.2f}  "
+            f"  R hand height: neutral={c.right_neutral_size:.2f}  "
             f"fwd={c.right_forward_size:.2f}  rev={c.right_backward_size:.2f}",
         ]
         deadline = time.time() + timeout_s
@@ -454,30 +464,30 @@ class HandController:
         Six captures (one hand at a time so detection is unambiguous):
 
           LEFT TREAD (left hand)
-            1. neutral distance from camera
-            2. push hand CLOSE to camera (full L forward)
-            3. pull hand FAR from camera (full L reverse)
+            1. neutral resting height
+            2. lift hand UP (full L forward)
+            3. drop hand DOWN (full L reverse)
           RIGHT TREAD (right hand)
-            4. neutral distance
-            5. close to camera (full R forward)
-            6. far from camera (full R reverse)
+            4. neutral resting height
+            5. lift hand UP (full R forward)
+            6. drop hand DOWN (full R reverse)
         """
         ln = self._capture_size(window_name,
-                                "LEFT HAND only: hold at COMFORTABLE neutral distance. SPACE.")
+                                "LEFT HAND only: hold at COMFORTABLE resting height. SPACE.")
         lf = self._capture_size(window_name,
-                                "LEFT HAND only: push CLOSE to camera (full L forward). SPACE.",
+                                "LEFT HAND only: lift hand UP (full L forward). SPACE.",
                                 ref_size=ln)
         lb = self._capture_size(window_name,
-                                "LEFT HAND only: pull FAR from camera (full L reverse). SPACE.",
+                                "LEFT HAND only: drop hand DOWN (full L reverse). SPACE.",
                                 ref_size=ln)
 
         rn = self._capture_size(window_name,
-                                "RIGHT HAND only: hold at COMFORTABLE neutral distance. SPACE.")
+                                "RIGHT HAND only: hold at COMFORTABLE resting height. SPACE.")
         rf = self._capture_size(window_name,
-                                "RIGHT HAND only: push CLOSE to camera (full R forward). SPACE.",
+                                "RIGHT HAND only: lift hand UP (full R forward). SPACE.",
                                 ref_size=rn)
         rb = self._capture_size(window_name,
-                                "RIGHT HAND only: pull FAR from camera (full R reverse). SPACE.",
+                                "RIGHT HAND only: drop hand DOWN (full R reverse). SPACE.",
                                 ref_size=rn)
 
         calib = HandCalibration(
@@ -493,10 +503,10 @@ class HandController:
 
     def _capture_size(self, window_name: str, prompt: str,
                       ref_size: Optional[float] = None) -> float:
-        """Capture mean convex-hull diameter over ~0.5s after SPACE.
-        Optionally draws a faint reference circle at `ref_size` so the user
-        can compare their current hand size against the previously captured
-        neutral."""
+        """Capture mean hand elevation over ~0.5s after SPACE. Optionally
+        draws a faint horizontal reference line at `ref_size` (the
+        previously captured neutral elevation) so the user can see how far
+        above/below it their hand currently sits."""
         captured: Optional[float] = None
         capturing_until: Optional[float] = None
         samples: list = []
@@ -516,7 +526,7 @@ class HandController:
             cx_px = cy_px = None
             if res.multi_hand_landmarks:
                 lms = res.multi_hand_landmarks[0]
-                sz = hand_size(lms.landmark)
+                sz = hand_height(lms.landmark)
                 cx_n, cy_n = hand_center(lms.landmark)
                 cx_px, cy_px = int(cx_n * w), int(cy_n * h)
                 self._draw.draw_landmarks(frame, lms, self._mp_hands.HAND_CONNECTIONS)
@@ -530,20 +540,20 @@ class HandController:
                         captured = float(np.mean(samples))
                     capturing_until = None
 
-            if ref_size is not None and cx_px is not None:
-                rr = max(4, int(ref_size * w * 0.5))
-                cv2.circle(frame, (cx_px, cy_px), rr, (180, 180, 180), 1, cv2.LINE_AA)
-                cv2.putText(frame, "neutral", (cx_px + rr + 4, cy_px),
+            if ref_size is not None:
+                ref_y = int(max(0.0, min(1.0, 1.0 - ref_size)) * h)
+                cv2.line(frame, (0, ref_y), (w, ref_y),
+                         (180, 180, 180), 1, cv2.LINE_AA)
+                cv2.putText(frame, "neutral", (8, max(12, ref_y - 4)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                             (180, 180, 180), 1, cv2.LINE_AA)
-            if sz is not None and cx_px is not None:
-                rr_live = max(4, int(sz * w * 0.5))
-                cv2.circle(frame, (cx_px, cy_px), rr_live, (0, 220, 220), 2, cv2.LINE_AA)
+            if cx_px is not None:
+                cv2.circle(frame, (cx_px, cy_px), 8, (0, 220, 220), -1, cv2.LINE_AA)
 
             cv2.putText(frame, prompt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                         0.6, (0, 255, 255), 2, cv2.LINE_AA)
             if sz is not None:
-                cv2.putText(frame, f"hand size: {sz:.3f}", (10, 60),
+                cv2.putText(frame, f"hand height: {sz:.3f}", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
             if capturing_until is not None:
                 cv2.putText(frame, "CAPTURING...", (10, 90),

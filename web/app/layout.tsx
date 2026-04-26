@@ -13,11 +13,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ghost Racer — Behavioral Cloning Race Car",
+  title: "67 RACER — Behavioral Cloning Race Car",
   description:
     "Drive a 1/18 scale car with hand gestures. A neural network learns your style and races your ghost autonomously.",
   openGraph: {
-    title: "Ghost Racer",
+    title: "67 RACER",
     description:
       "Drive with your hands. Train an AI ghost. Race it on a real track.",
     type: "website",

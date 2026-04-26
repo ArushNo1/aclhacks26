@@ -6,7 +6,7 @@ import {
   MQTTLog, DeviceHealth,
   BG, BORDER,
 } from '../shared';
-import { ActTitle, KV, card } from './common';
+import { ActTitle, card } from './common';
 
 export function ActDebug() {
   return (
@@ -35,19 +35,6 @@ export function ActDebug() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
         <Label>DEVICE HEALTH</Label>
         <DeviceHealth />
-
-        <div style={card({ display: 'flex', flexDirection: 'column', gap: 10 })}>
-          <Label>NETWORK</Label>
-          <Divider />
-          {[
-            { label: 'SSID', value: 'GhostRacer-5G' },
-            { label: 'ROUTER', value: '192.168.1.1' },
-            { label: 'BROKER', value: '127.0.0.1:1883' },
-            { label: 'LATENCY', value: '2.3ms' },
-          ].map(({ label, value }) => (
-            <KV key={label} label={label} value={value} />
-          ))}
-        </div>
       </div>
     </div>
   );
