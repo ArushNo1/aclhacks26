@@ -1,15 +1,33 @@
 """
-Webcam + MediaPipe Hands -> calibrated (steer, throttle).
+Webcam + MediaPipe Hands -> calibrated (steer, throttle), two hands, TANK DRIVE.
 
 Mapping
 -------
-- Steer: arm rotation. At calibration we capture the wrist position at neutral
-  and place a fixed PIVOT below it (approximating where the shoulder would be).
-  At runtime, steer = atan2(wrist - pivot), remapped through the per-user
-  left/center/right arm angles and shaped by a soft curve. Swinging your whole
-  arm left/right rotates the (pivot -> wrist) vector around the fixed pivot.
-- Throttle: hand openness (mean fingertip->MCP distance / palm width),
-  remapped through a per-user calibration (closed-fist / open-hand).
+Each hand independently controls its side of the vehicle (like a tracked
+vehicle / skid steer). The depth of each hand (how close it is to the
+camera) drives that side's throttle, measured as the convex-hull diameter
+of the 21 hand landmarks in normalized image coords — bigger on screen =
+closer = more throttle.
+
+- LEFT  hand size -> left-tread throttle  in [-1, +1]
+- RIGHT hand size -> right-tread throttle in [-1, +1]
+
+Both hands close to camera = full forward.  Both pulled back = full
+reverse.  One hand close and the other neutral (or far) creates a
+differential, which the env consumes as a steering input.
+
+We translate the two side throttles into the (steer, throttle) action the
+sim expects:
+
+    throttle = (left + right) / 2
+    steer    = soft_curve((left - right) / 2)
+
+Sign convention matches `Car.step` (positive steer = turn RIGHT). Tank
+intuition: left side faster than right tread => vehicle curves right.
+
+The two hands are distinguished by their x-position in the (mirrored)
+frame: the user's right hand sits on the right side of the screen
+(higher x).
 
 Run standalone for live calibration + preview:
     python -m ghost_racer.control.hand_control --calibrate
@@ -23,7 +41,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Optional, Tuple
 
 import cv2
@@ -33,78 +51,76 @@ import mediapipe as mp
 
 SMOOTH_ALPHA = 0.10       # 0=no smoothing, 1=full inertia
 STEER_EXPONENT = 3.0      # raise for softer center, lower for sharper
-STEER_DEADZONE = 0.02     # raw-axis fraction treated as zero (kills jitter near center)
-STEER_MAX = 0.15          # cap on |steer| output; hands can't reliably hit ±1
-PIVOT_OFFSET_Y = 0.55     # in normalized image-height units; how far BELOW the
-                          # neutral wrist the fixed pivot sits (~ where the
-                          # shoulder is, off-frame). Bigger = arm motion needs
-                          # to be larger to produce the same angle change.
+STEER_DEADZONE = 0.02     # |differential| below this is treated as 0
+STEER_MAX = 0.15          # cap on |steer| output sent to Car.step
+THROTTLE_DEADZONE = 0.10  # per-side; |throttle| below this collapses to 0
 DEFAULT_CALIB_PATH = "ghost_racer/data/hand_calibration.json"
 
 
-def _wrap_pi(d: float) -> float:
-    """Wrap an angle difference into (-pi, pi]."""
-    return (d + math.pi) % (2 * math.pi) - math.pi
-
-
-def arm_angle(wrist_xy: Tuple[float, float],
-              pivot_xy: Tuple[float, float]) -> float:
-    """Angle (rad) of the vector from pivot to wrist, in image coords
-    (y grows downward). Hand directly above pivot -> -pi/2."""
-    return math.atan2(wrist_xy[1] - pivot_xy[1], wrist_xy[0] - pivot_xy[0])
+def _shape_steer(diff: float) -> float:
+    """Apply deadzone + exponent + STEER_MAX cap to a normalized
+    differential in [-1, 1]. Used to convert tank-drive (L-R)/2 into the
+    steer scalar the env consumes."""
+    s = max(-1.0, min(1.0, diff))
+    if abs(s) <= STEER_DEADZONE:
+        return 0.0
+    s = (abs(s) - STEER_DEADZONE) / (1.0 - STEER_DEADZONE) * (1.0 if s > 0 else -1.0)
+    out = math.copysign(abs(s) ** STEER_EXPONENT, s)
+    return max(-STEER_MAX, min(STEER_MAX, out))
 
 
 # ------------------------------------------------------------------ calibration
 @dataclass
 class HandCalibration:
-    """Per-user mapping from arm-rotation features to [-1, 1] axes."""
-    # fixed pivot in normalized image coords, captured at calibration
-    pivot_x: float = 0.5
-    pivot_y: float = 1.05  # below the frame
-    # arm-vector angles at the three calibrated positions (radians)
-    center_arm_rad: float = -math.pi / 2
-    left_arm_rad: float = -math.pi / 2 - math.radians(30)
-    right_arm_rad: float = -math.pi / 2 + math.radians(30)
-    # throttle (unchanged)
-    closed_openness: float = 0.5
-    open_openness: float = 2.0
+    """Per-user hand-size anchors for tank-drive throttle, one set per hand.
+    Sizes are convex-hull diameters in normalized image coords; close to
+    camera = larger size = forward throttle."""
+    # left tread
+    left_neutral_size: float = 0.30
+    left_forward_size: float = 0.55  # close to camera
+    left_backward_size: float = 0.18  # far from camera
+    # right tread
+    right_neutral_size: float = 0.30
+    right_forward_size: float = 0.55
+    right_backward_size: float = 0.18
     steer_exponent: float = STEER_EXPONENT
 
-    def map_steer(self, raw_arm_rad: float) -> float:
-        """
-        Map a raw arm angle to a steer in [-STEER_MAX, +STEER_MAX].
-
-        Direction-agnostic: regardless of whether L<C<R or L>C>R numerically,
-        raw=L returns -1 and raw=R returns +1. Angle differences are wrapped
-        into (-pi, pi] so the mapping behaves correctly even when the
-        calibrated angles straddle the discontinuity at +/-pi.
-        """
-        dr = _wrap_pi(raw_arm_rad - self.center_arm_rad)
-        dL = _wrap_pi(self.left_arm_rad - self.center_arm_rad)
-        dR = _wrap_pi(self.right_arm_rad - self.center_arm_rad)
-        # same side of center as left?
-        if dr * dL >= 0:
-            denom = dL
-            if abs(denom) < 1e-6:
+    @staticmethod
+    def _map_side(raw_size: float, neutral: float, forward: float, backward: float) -> float:
+        """Map a single hand's convex-hull diameter to side-throttle in
+        [-1, +1]. Direction-agnostic so forward/backward can sit on either
+        side of neutral (forward is normally larger but we don't assume it)."""
+        df = forward - neutral
+        db = backward - neutral
+        dr = raw_size - neutral
+        if dr * df >= 0:  # toward forward
+            if abs(df) < 1e-6:
                 return 0.0
-            s = -dr / denom
-        else:
-            denom = dR
-            if abs(denom) < 1e-6:
+            t = max(0.0, min(1.0, dr / df))
+        else:             # toward backward
+            if abs(db) < 1e-6:
                 return 0.0
-            s = dr / denom
-        s = max(-1.0, min(1.0, s))
-        # deadzone around center, then re-normalize so the rest of the range is smooth
-        if abs(s) <= STEER_DEADZONE:
+            t = max(-1.0, min(0.0, -dr / db))
+        if abs(t) < THROTTLE_DEADZONE:
             return 0.0
-        s = (abs(s) - STEER_DEADZONE) / (1.0 - STEER_DEADZONE) * (1.0 if s > 0 else -1.0)
-        out = math.copysign(abs(s) ** STEER_EXPONENT, s)
-        return max(-STEER_MAX, min(STEER_MAX, out))
+        sign = 1.0 if t > 0 else -1.0
+        return sign * (abs(t) - THROTTLE_DEADZONE) / (1.0 - THROTTLE_DEADZONE)
 
-    def map_throttle(self, raw_openness: float) -> float:
-        denom = (self.open_openness - self.closed_openness) or 1e-6
-        t = (raw_openness - self.closed_openness) / denom
-        return max(0.0, min(1.0, t))
+    def left_throttle(self, raw_size: float) -> float:
+        return self._map_side(raw_size, self.left_neutral_size,
+                              self.left_forward_size, self.left_backward_size)
+
+    def right_throttle(self, raw_size: float) -> float:
+        return self._map_side(raw_size, self.right_neutral_size,
+                              self.right_forward_size, self.right_backward_size)
+
+    def tank_to_action(self, left_t: float, right_t: float) -> Tuple[float, float]:
+        """Combine two side throttles into (steer, throttle).
+        positive steer = turn right (matches Car.step convention)."""
+        throttle = 0.5 * (left_t + right_t)
+        # left tread faster than right -> vehicle curves to the RIGHT
+        steer = _shape_steer(0.5 * (left_t - right_t))
+        return float(steer), float(max(-1.0, min(1.0, throttle)))
 
     def save(self, path: str = DEFAULT_CALIB_PATH) -> None:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -119,17 +135,19 @@ class HandCalibration:
             return c
         with open(path) as f:
             data = json.load(f)
-        # tolerate older files missing fields
         valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         c = cls(**valid)
-        # tag whether the file was written under the arm-rotation schema
-        c._has_arm_data = "pivot_x" in data and "center_arm_rad" in data  # type: ignore[attr-defined]
+        # tag whether the file was written under the current depth-tank schema
+        c._has_arm_data = (
+            "left_neutral_size" in data and "right_neutral_size" in data
+        )  # type: ignore[attr-defined]
         return c
 
     @property
     def has_arm_data(self) -> bool:
         """True if this calibration was loaded from a file using the
-        arm-rotation schema (pivot + arm angles)."""
+        current tank-drive schema. Name kept for backwards compatibility
+        with play.py."""
         return getattr(self, "_has_arm_data", True)
 
 
@@ -137,51 +155,74 @@ class HandCalibration:
 class HandReading:
     steer: float = 0.0
     throttle: float = 0.0
-    has_hand: bool = False
-    raw_tilt_rad: float = 0.0
-    raw_openness: float = 0.0
+    has_hand: bool = False     # True if at least one hand detected
+    has_left: bool = False
+    has_right: bool = False
+    left_throttle: float = 0.0
+    right_throttle: float = 0.0
+    raw_left_size: float = 0.30
+    raw_right_size: float = 0.30
 
 
 # ------------------------------------------------------------------ feature extraction
-def _vec(a, b) -> Tuple[float, float]:
-    return (b.x - a.x, b.y - a.y)
+def hand_size(lms) -> float:
+    """Convex-hull diameter (max pairwise distance) over the 21 hand
+    landmarks in normalized image coords. Larger = closer to camera."""
+    pts = np.asarray([[lm.x, lm.y] for lm in lms], dtype=np.float32)
+    diffs = pts[:, None, :] - pts[None, :, :]
+    return float(np.sqrt((diffs * diffs).sum(-1)).max())
 
 
-def _norm(v) -> float:
-    return math.hypot(v[0], v[1])
+def hand_center(lms) -> Tuple[float, float]:
+    """Mean of the 21 hand landmarks in normalized image coords. Used for
+    overlay placement of the hand-size indicator."""
+    xs = sum(lm.x for lm in lms) / len(lms)
+    ys = sum(lm.y for lm in lms) / len(lms)
+    return float(xs), float(ys)
 
 
-def extract_raw(lms) -> Tuple[Tuple[float, float], float]:
-    """Returns (wrist_xy_normalized, raw_openness) for one detected hand."""
-    wrist_xy = (lms[0].x, lms[0].y)
-
-    palm_width = _norm(_vec(lms[5], lms[17])) + 1e-6
-    finger_lengths = [
-        _norm(_vec(lms[5], lms[8])),
-        _norm(_vec(lms[9], lms[12])),
-        _norm(_vec(lms[13], lms[16])),
-        _norm(_vec(lms[17], lms[20])),
-    ]
-    openness = (sum(finger_lengths) / 4.0) / palm_width
-    return wrist_xy, openness
-
-
-def landmarks_to_action(lms, prev: HandReading, calib: HandCalibration) -> HandReading:
-    wrist_xy, raw_open = extract_raw(lms)
-    raw_arm = arm_angle(wrist_xy, (calib.pivot_x, calib.pivot_y))
-    raw_steer = calib.map_steer(raw_arm)
-    raw_throttle = calib.map_throttle(raw_open)
-
+def landmarks_to_action(left_lms, right_lms,
+                        prev: HandReading,
+                        calib: HandCalibration) -> HandReading:
+    """Combine left + right hand landmarks into a smoothed tank-drive
+    HandReading. Either side may be None when that hand is missing; the
+    missing side's throttle decays toward zero via the smoothing constant."""
     a = SMOOTH_ALPHA
-    steer = a * prev.steer + (1 - a) * raw_steer
-    throttle = a * prev.throttle + (1 - a) * raw_throttle
+
+    # left tread
+    if left_lms is not None:
+        raw_left_size = hand_size(left_lms)
+        raw_left_t = calib.left_throttle(raw_left_size)
+        has_left = True
+    else:
+        raw_left_size = prev.raw_left_size
+        raw_left_t = 0.0  # decay missing side toward 0
+        has_left = False
+    left_t = a * prev.left_throttle + (1 - a) * raw_left_t
+
+    # right tread
+    if right_lms is not None:
+        raw_right_size = hand_size(right_lms)
+        raw_right_t = calib.right_throttle(raw_right_size)
+        has_right = True
+    else:
+        raw_right_size = prev.raw_right_size
+        raw_right_t = 0.0
+        has_right = False
+    right_t = a * prev.right_throttle + (1 - a) * raw_right_t
+
+    steer, throttle = calib.tank_to_action(left_t, right_t)
 
     return HandReading(
-        steer=float(steer),
-        throttle=float(throttle),
-        has_hand=True,
-        raw_tilt_rad=float(raw_arm),  # repurposed: now the arm angle
-        raw_openness=float(raw_open),
+        steer=steer,
+        throttle=throttle,
+        has_hand=(has_left or has_right),
+        has_left=has_left,
+        has_right=has_right,
+        left_throttle=float(left_t),
+        right_throttle=float(right_t),
+        raw_left_size=float(raw_left_size),
+        raw_right_size=float(raw_right_size),
     )
 
 
@@ -198,14 +239,33 @@ class HandController:
         self.calibration = calibration or HandCalibration.load()
         self._hands = mp.solutions.hands.Hands(
             model_complexity=0,
-            max_num_hands=1,
+            max_num_hands=2,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
         self._draw = mp.solutions.drawing_utils
         self._mp_hands = mp.solutions.hands
         self.last = HandReading()
-        self.last_wrist: Optional[Tuple[float, float]] = None
+        self.last_left_wrist: Optional[Tuple[float, float]] = None
+        self.last_right_wrist: Optional[Tuple[float, float]] = None
+        self.last_left_center: Optional[Tuple[float, float]] = None
+        self.last_right_center: Optional[Tuple[float, float]] = None
+
+    @staticmethod
+    def _split_hands(hand_landmarks_list):
+        """Sort hands by wrist x in the mirrored frame: lowest x = LEFT
+        hand, highest x = RIGHT hand. With one hand visible, x >= 0.5
+        routes it to the right slot."""
+        if not hand_landmarks_list:
+            return None, None
+        if len(hand_landmarks_list) == 1:
+            lms = hand_landmarks_list[0]
+            wx = lms.landmark[0].x
+            if wx >= 0.5:
+                return None, lms
+            return lms, None
+        sorted_hands = sorted(hand_landmarks_list, key=lambda h: h.landmark[0].x)
+        return sorted_hands[0], sorted_hands[-1]
 
     def read(self) -> Tuple[HandReading, Optional[np.ndarray]]:
         ok, frame = self.cap.read()
@@ -218,57 +278,121 @@ class HandController:
         rgb.flags.writeable = False
         result = self._hands.process(rgb)
 
-        if result.multi_hand_landmarks:
-            lms = result.multi_hand_landmarks[0]
-            self.last = landmarks_to_action(lms.landmark, self.last, self.calibration)
-            self.last_wrist = (lms.landmark[0].x, lms.landmark[0].y)
-            self._draw.draw_landmarks(frame, lms, self._mp_hands.HAND_CONNECTIONS)
+        left_lms, right_lms = self._split_hands(result.multi_hand_landmarks or [])
+        if left_lms is not None or right_lms is not None:
+            self.last = landmarks_to_action(
+                left_lms.landmark if left_lms is not None else None,
+                right_lms.landmark if right_lms is not None else None,
+                self.last, self.calibration,
+            )
+            self.last_left_wrist = (
+                (left_lms.landmark[0].x, left_lms.landmark[0].y)
+                if left_lms is not None else None
+            )
+            self.last_right_wrist = (
+                (right_lms.landmark[0].x, right_lms.landmark[0].y)
+                if right_lms is not None else None
+            )
+            self.last_left_center = (
+                hand_center(left_lms.landmark) if left_lms is not None else None
+            )
+            self.last_right_center = (
+                hand_center(right_lms.landmark) if right_lms is not None else None
+            )
+            for lms in (left_lms, right_lms):
+                if lms is not None:
+                    self._draw.draw_landmarks(frame, lms, self._mp_hands.HAND_CONNECTIONS)
         else:
             a = SMOOTH_ALPHA
             self.last = HandReading(
                 steer=a * self.last.steer,
                 throttle=a * self.last.throttle,
                 has_hand=False,
+                left_throttle=a * self.last.left_throttle,
+                right_throttle=a * self.last.right_throttle,
+                raw_left_size=self.last.raw_left_size,
+                raw_right_size=self.last.raw_right_size,
             )
+            self.last_left_wrist = None
+            self.last_right_wrist = None
+            self.last_left_center = None
+            self.last_right_center = None
         return self.last, frame
 
     def overlay(self, frame: np.ndarray, reading: HandReading) -> np.ndarray:
-        """Draw steer/throttle bars + arm-pivot indicator on the webcam frame."""
+        """Draw per-side size rings + summary steer/throttle bars.
+        Each detected hand gets a live ring (radius proportional to current
+        convex-hull diameter) plus dashed reference rings at the calibrated
+        forward (close, green) and backward (far, blue) sizes."""
         h, w = frame.shape[:2]
-
-        # arm pivot + arm vector
         c = self.calibration
-        px = int(c.pivot_x * w)
-        py = int(c.pivot_y * h)
-        # pivot is usually below the frame; clip drawing to the bottom edge
-        px_d = max(0, min(w - 1, px))
-        py_d = max(0, min(h - 1, py))
-        cv2.circle(frame, (px_d, py_d), 6, (0, 200, 255), -1)
-        cv2.putText(frame, "pivot", (px_d + 8, py_d - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1, cv2.LINE_AA)
-        if self.last_wrist is not None and reading.has_hand:
-            wx = int(self.last_wrist[0] * w)
-            wy = int(self.last_wrist[1] * h)
-            cv2.line(frame, (px_d, py_d), (wx, wy), (0, 200, 255), 2)
 
-        # steering bar
+        # Sizes were captured in normalized image coords (max coord = 1.0
+        # along the larger image axis). Scale to pixels by the frame width
+        # so visual radii roughly match what the calibration captured.
+        scale = float(w)
+
+        def draw_side(label: str, color,
+                      neutral: float, forward: float, backward: float,
+                      center: Optional[Tuple[float, float]],
+                      live_size: float, side_throttle: float):
+            if center is None:
+                return
+            cx_px = int(center[0] * w)
+            cy_px = int(center[1] * h)
+            r_live = max(4, int(live_size * scale * 0.5))
+            r_fwd = max(4, int(forward * scale * 0.5))
+            r_back = max(4, int(backward * scale * 0.5))
+            # reference rings (dashed via two arcs)
+            cv2.circle(frame, (cx_px, cy_px), r_fwd, (60, 220, 60), 1, cv2.LINE_AA)
+            cv2.circle(frame, (cx_px, cy_px), r_back, (60, 60, 220), 1, cv2.LINE_AA)
+            # live hand-size ring
+            cv2.circle(frame, (cx_px, cy_px), r_live, color, 2, cv2.LINE_AA)
+            cv2.putText(frame, f"{label}  size={live_size:.2f}  t={side_throttle:+.2f}",
+                        (cx_px - 70, cy_px - r_live - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+
+        draw_side("L", (0, 200, 255),
+                  c.left_neutral_size, c.left_forward_size, c.left_backward_size,
+                  self.last_left_center, reading.raw_left_size, reading.left_throttle)
+        draw_side("R", (60, 220, 60),
+                  c.right_neutral_size, c.right_forward_size, c.right_backward_size,
+                  self.last_right_center, reading.raw_right_size, reading.right_throttle)
+
+        # legend in the top-right
+        cv2.putText(frame, "green = full fwd size", (w - 220, h - 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 220, 60), 1, cv2.LINE_AA)
+        cv2.putText(frame, "blue  = full rev size", (w - 220, h - 44),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 60, 220), 1, cv2.LINE_AA)
+
+        # summary bars (steer horizontal at bottom, throttle vertical right-of-center)
         bar_w = 200
         cx, cy = w // 2, h - 40
-        cv2.rectangle(frame, (cx - bar_w, cy - 6), (cx + bar_w, cy + 6), (60, 60, 60), 1)
-        cv2.circle(frame, (int(cx + reading.steer * bar_w), cy), 8, (0, 255, 0), -1)
+        cv2.rectangle(frame, (cx - bar_w, cy - 6), (cx + bar_w, cy + 6),
+                      (60, 60, 60), 1)
+        cv2.circle(frame, (int(cx + reading.steer / max(STEER_MAX, 1e-6) * bar_w), cy),
+                   8, (0, 255, 0), -1)
 
-        # throttle bar (vertical)
-        ty0, ty1 = 40, h - 80
-        tcx = w - 40
+        ty0, ty1 = h - 240, h - 80
+        tcx = cx + bar_w + 30
+        mid = (ty0 + ty1) // 2
         cv2.rectangle(frame, (tcx - 6, ty0), (tcx + 6, ty1), (60, 60, 60), 1)
-        ty = int(ty1 - reading.throttle * (ty1 - ty0))
-        cv2.circle(frame, (tcx, ty), 8, (0, 165, 255), -1)
+        cv2.line(frame, (tcx - 10, mid), (tcx + 10, mid), (180, 180, 180), 1)
+        bar_half = (ty1 - ty0) // 2
+        ty = int(mid - reading.throttle * bar_half)
+        thr_color = (60, 220, 60) if reading.throttle >= 0 else (60, 60, 220)
+        cv2.circle(frame, (tcx, ty), 8, thr_color, -1)
 
-        label = f"steer={reading.steer:+.2f}  throttle={reading.throttle:.2f}  arm={math.degrees(reading.raw_tilt_rad):+5.1f}deg"
-        if not reading.has_hand:
-            label += "  [NO HAND]"
+        flags = []
+        if not reading.has_left:
+            flags.append("NO L")
+        if not reading.has_right:
+            flags.append("NO R")
+        flag_str = ("  [" + ", ".join(flags) + "]") if flags else ""
+        label = (f"L={reading.left_throttle:+.2f}  R={reading.right_throttle:+.2f}  "
+                 f"steer={reading.steer:+.2f}  thr={reading.throttle:+.2f}{flag_str}")
         cv2.putText(frame, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (0, 255, 0), 1, cv2.LINE_AA)
+                    0.55, (0, 255, 0), 1, cv2.LINE_AA)
         return frame
 
     def close(self) -> None:
@@ -279,28 +403,22 @@ class HandController:
     def prompt_use_saved(self, window_name: str = "hand profile",
                          calib_path: str = DEFAULT_CALIB_PATH,
                          timeout_s: float = 12.0) -> bool:
-        """
-        Show a popup asking whether to use the saved hand profile or recalibrate.
-        Returns True to use saved, False to recalibrate.
-        Auto-accepts saved profile after `timeout_s` of inactivity.
-        """
+        """Popup asking whether to reuse the saved tank-drive profile or
+        recalibrate. Returns True for use-saved."""
         if not os.path.exists(calib_path):
             return False
         c = self.calibration
-        deg = math.degrees
         info = [
             f"Saved hand profile found: {calib_path}",
-            f"  pivot:       ({c.pivot_x:.2f}, {c.pivot_y:.2f}) (norm. img coords)",
-            f"  center arm:  {deg(c.center_arm_rad):+6.1f} deg",
-            f"  left arm:    {deg(c.left_arm_rad):+6.1f} deg",
-            f"  right arm:   {deg(c.right_arm_rad):+6.1f} deg",
-            f"  closed/open: {c.closed_openness:.2f} / {c.open_openness:.2f}",
+            f"  L hand size: neutral={c.left_neutral_size:.2f}  "
+            f"fwd={c.left_forward_size:.2f}  rev={c.left_backward_size:.2f}",
+            f"  R hand size: neutral={c.right_neutral_size:.2f}  "
+            f"fwd={c.right_forward_size:.2f}  rev={c.right_backward_size:.2f}",
         ]
         deadline = time.time() + timeout_s
         while True:
             ok, frame = self.cap.read()
             if not ok:
-                # camera died; fall back to "use saved"
                 return True
             if self.mirror:
                 frame = cv2.flip(frame, 1)
@@ -310,7 +428,8 @@ class HandController:
             for i, line in enumerate(info):
                 cv2.putText(frame, line, (10, 60 + i * 22),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-            cv2.putText(frame, f"[ENTER/Y] use saved ({remaining:0.0f}s)   [R/N] recalibrate   [Q] quit",
+            cv2.putText(frame,
+                        f"[ENTER/Y] use saved ({remaining:0.0f}s)   [R/N] recalibrate   [Q] quit",
                         (10, frame.shape[0] - 18),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
             cv2.imshow(window_name, frame)
@@ -332,70 +451,53 @@ class HandController:
     def run_calibration(self, window_name: str = "calibration",
                         save_path: str = DEFAULT_CALIB_PATH) -> HandCalibration:
         """
-        Walks the user through 5 captures:
-          1. neutral arm position  -> defines the fixed pivot
-          2. arm swung fully left  -> left arm angle
-          3. arm swung fully right -> right arm angle
-          4. closed fist           -> throttle floor
-          5. open hand             -> throttle ceiling
+        Six captures (one hand at a time so detection is unambiguous):
 
-        Steer is the angle of the (pivot -> wrist) vector, so swinging your
-        whole arm rotates it around the pivot like a steering wheel.
+          LEFT TREAD (left hand)
+            1. neutral distance from camera
+            2. push hand CLOSE to camera (full L forward)
+            3. pull hand FAR from camera (full L reverse)
+          RIGHT TREAD (right hand)
+            4. neutral distance
+            5. close to camera (full R forward)
+            6. far from camera (full R reverse)
         """
-        # 1) neutral: fixes the pivot
-        center_wrist = self._capture_xy(
-            window_name,
-            "Hold arm at NEUTRAL (centered, comfortable resting). SPACE to capture.",
-        )
-        pivot = (center_wrist[0], center_wrist[1] + PIVOT_OFFSET_Y)
-        center_arm = arm_angle(center_wrist, pivot)  # ~ -pi/2
+        ln = self._capture_size(window_name,
+                                "LEFT HAND only: hold at COMFORTABLE neutral distance. SPACE.")
+        lf = self._capture_size(window_name,
+                                "LEFT HAND only: push CLOSE to camera (full L forward). SPACE.",
+                                ref_size=ln)
+        lb = self._capture_size(window_name,
+                                "LEFT HAND only: pull FAR from camera (full L reverse). SPACE.",
+                                ref_size=ln)
 
-        # 2) left
-        left_wrist = self._capture_xy(
-            window_name,
-            "Swing arm FULLY LEFT (rotate from shoulder, keep grip). SPACE.",
-            pivot=pivot,
-        )
-        left_arm = arm_angle(left_wrist, pivot)
-
-        # 3) right
-        right_wrist = self._capture_xy(
-            window_name,
-            "Swing arm FULLY RIGHT (rotate from shoulder, keep grip). SPACE.",
-            pivot=pivot,
-        )
-        right_arm = arm_angle(right_wrist, pivot)
-
-        # 4) closed-fist openness
-        closed = self._capture_scalar(window_name, "Make a fist. SPACE to capture.")
-        # 5) open-hand openness
-        open_ = self._capture_scalar(window_name, "Open hand wide, fingers extended. SPACE.")
+        rn = self._capture_size(window_name,
+                                "RIGHT HAND only: hold at COMFORTABLE neutral distance. SPACE.")
+        rf = self._capture_size(window_name,
+                                "RIGHT HAND only: push CLOSE to camera (full R forward). SPACE.",
+                                ref_size=rn)
+        rb = self._capture_size(window_name,
+                                "RIGHT HAND only: pull FAR from camera (full R reverse). SPACE.",
+                                ref_size=rn)
 
         calib = HandCalibration(
-            pivot_x=pivot[0],
-            pivot_y=pivot[1],
-            center_arm_rad=center_arm,
-            left_arm_rad=left_arm,
-            right_arm_rad=right_arm,
-            closed_openness=closed,
-            open_openness=open_,
+            left_neutral_size=ln, left_forward_size=lf, left_backward_size=lb,
+            right_neutral_size=rn, right_forward_size=rf, right_backward_size=rb,
             steer_exponent=STEER_EXPONENT,
         )
-        # map_steer is direction-agnostic, so L/R swap is handled automatically.
+        # _map_side is direction-agnostic, so close/far swaps are absorbed.
         calib.save(save_path)
         self.calibration = calib
         cv2.destroyWindow(window_name)
         return calib
 
-    def _capture_xy(self, window_name: str, prompt: str,
-                    pivot: Optional[Tuple[float, float]] = None
-                    ) -> Tuple[float, float]:
-        """
-        Capture the mean wrist position over ~0.5s after SPACE. If `pivot` is
-        provided, also visualizes the arm vector (pivot -> wrist) live.
-        Returns (x, y) in normalized image coords.
-        """
-        captured: Optional[Tuple[float, float]] = None
+    def _capture_size(self, window_name: str, prompt: str,
+                      ref_size: Optional[float] = None) -> float:
+        """Capture mean convex-hull diameter over ~0.5s after SPACE.
+        Optionally draws a faint reference circle at `ref_size` so the user
+        can compare their current hand size against the previously captured
+        neutral."""
+        captured: Optional[float] = None
         capturing_until: Optional[float] = None
         samples: list = []
 
@@ -410,108 +512,44 @@ class HandController:
             rgb.flags.writeable = False
             res = self._hands.process(rgb)
 
-            wrist_xy: Optional[Tuple[float, float]] = None
+            sz: Optional[float] = None
+            cx_px = cy_px = None
             if res.multi_hand_landmarks:
                 lms = res.multi_hand_landmarks[0]
-                wrist_xy = (lms.landmark[0].x, lms.landmark[0].y)
+                sz = hand_size(lms.landmark)
+                cx_n, cy_n = hand_center(lms.landmark)
+                cx_px, cy_px = int(cx_n * w), int(cy_n * h)
                 self._draw.draw_landmarks(frame, lms, self._mp_hands.HAND_CONNECTIONS)
 
             now = time.time()
             if capturing_until is not None:
-                if wrist_xy is not None:
-                    samples.append(wrist_xy)
-                if now >= capturing_until:
-                    if samples:
-                        xs = [s[0] for s in samples]
-                        ys = [s[1] for s in samples]
-                        captured = (float(np.mean(xs)), float(np.mean(ys)))
-                    capturing_until = None
-
-            # visualize pivot + arm vector (pivot is usually below the frame)
-            if pivot is not None:
-                px = int(pivot[0] * w)
-                py = int(pivot[1] * h)
-                px_d = max(0, min(w - 1, px))
-                py_d = max(0, min(h - 1, py))
-                cv2.circle(frame, (px_d, py_d), 6, (0, 200, 255), -1)
-                if wrist_xy is not None:
-                    wx = int(wrist_xy[0] * w)
-                    wy = int(wrist_xy[1] * h)
-                    cv2.line(frame, (px_d, py_d), (wx, wy), (0, 200, 255), 2)
-
-            # overlay text
-            cv2.putText(frame, prompt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 255, 255), 2, cv2.LINE_AA)
-            if wrist_xy is not None:
-                tag = f"wrist: ({wrist_xy[0]:.2f}, {wrist_xy[1]:.2f})"
-                if pivot is not None:
-                    tag += f"  arm: {math.degrees(arm_angle(wrist_xy, pivot)):+6.1f} deg"
-                cv2.putText(frame, tag, (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
-            if capturing_until is not None:
-                cv2.putText(frame, "CAPTURING...", (10, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-            if captured is not None:
-                cv2.putText(frame,
-                            f"got ({captured[0]:.2f}, {captured[1]:.2f}) - SPACE to continue, R to redo",
-                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
-
-            cv2.imshow(window_name, frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord(" "):
-                if captured is not None:
-                    return captured
-                if wrist_xy is not None and capturing_until is None:
-                    samples = []
-                    capturing_until = now + 0.5
-            elif key == ord("r") and captured is not None:
-                captured = None
-                samples = []
-                capturing_until = None
-            elif key in (ord("q"), 27):
-                raise KeyboardInterrupt("calibration aborted")
-
-    def _capture_scalar(self, window_name: str, prompt: str) -> float:
-        """Capture mean openness over ~0.5s after SPACE."""
-        captured: Optional[float] = None
-        capturing_until: Optional[float] = None
-        samples: list = []
-
-        while True:
-            ok, frame = self.cap.read()
-            if not ok:
-                continue
-            if self.mirror:
-                frame = cv2.flip(frame, 1)
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            res = self._hands.process(rgb)
-
-            raw_open: Optional[float] = None
-            if res.multi_hand_landmarks:
-                lms = res.multi_hand_landmarks[0]
-                _, raw_open = extract_raw(lms.landmark)
-                self._draw.draw_landmarks(frame, lms, self._mp_hands.HAND_CONNECTIONS)
-
-            now = time.time()
-            if capturing_until is not None:
-                if raw_open is not None:
-                    samples.append(raw_open)
+                if sz is not None:
+                    samples.append(sz)
                 if now >= capturing_until:
                     if samples:
                         captured = float(np.mean(samples))
                     capturing_until = None
 
+            if ref_size is not None and cx_px is not None:
+                rr = max(4, int(ref_size * w * 0.5))
+                cv2.circle(frame, (cx_px, cy_px), rr, (180, 180, 180), 1, cv2.LINE_AA)
+                cv2.putText(frame, "neutral", (cx_px + rr + 4, cy_px),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                            (180, 180, 180), 1, cv2.LINE_AA)
+            if sz is not None and cx_px is not None:
+                rr_live = max(4, int(sz * w * 0.5))
+                cv2.circle(frame, (cx_px, cy_px), rr_live, (0, 220, 220), 2, cv2.LINE_AA)
+
             cv2.putText(frame, prompt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                         0.6, (0, 255, 255), 2, cv2.LINE_AA)
-            if raw_open is not None:
-                cv2.putText(frame, f"raw openness: {raw_open:+.3f}", (10, 60),
+            if sz is not None:
+                cv2.putText(frame, f"hand size: {sz:.3f}", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
             if capturing_until is not None:
                 cv2.putText(frame, "CAPTURING...", (10, 90),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
             if captured is not None:
-                cv2.putText(frame, f"got {captured:+.3f} - SPACE to continue, R to redo",
+                cv2.putText(frame, f"got {captured:.3f} - SPACE to continue, R to redo",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
 
             cv2.imshow(window_name, frame)
@@ -519,7 +557,7 @@ class HandController:
             if key == ord(" "):
                 if captured is not None:
                     return captured
-                if raw_open is not None and capturing_until is None:
+                if sz is not None and capturing_until is None:
                     samples = []
                     capturing_until = now + 0.5
             elif key == ord("r") and captured is not None:

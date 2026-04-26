@@ -84,7 +84,7 @@ def main() -> None:
     client.loop_start()
 
     def publish(steer: float, throttle: float) -> None:
-        payload = json.dumps({"steer": float(steer), "throttle": float(throttle)})
+        payload = json.dumps({"steer": float(steer), "throttle": float(float(np.clip(throttle, -args.max_throttle, args.max_throttle)))})
         client.publish(TOPIC, payload, qos=0)
 
     print(f"[drive] mqtt://{BROKER}:{PORT}/{TOPIC}  cap={args.max_throttle}  rate={args.rate}Hz")

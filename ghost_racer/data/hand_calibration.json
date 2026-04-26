@@ -1,10 +1,9 @@
 {
-  "pivot_x": 0.764663430777463,
-  "pivot_y": 1.123861067945307,
-  "center_arm_rad": -1.5707963267948966,
-  "left_arm_rad": -2.2406565771986506,
-  "right_arm_rad": -1.3842644010276703,
-  "closed_openness": 0.4189054955653811,
-  "open_openness": 1.3348550014292075,
-  "steer_exponent": 5.0
+  "left_neutral_size": 0.18316207379102706,
+  "left_forward_size": 0.4494659334421158,
+  "left_backward_size": 0.11518305018544198,
+  "right_neutral_size": 0.16935330927371978,
+  "right_forward_size": 0.4423908531665802,
+  "right_backward_size": 0.10497870817780494,
+  "steer_exponent": 3.0
 }
