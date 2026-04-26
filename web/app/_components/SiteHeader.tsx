@@ -33,10 +33,16 @@ export default function SiteHeader() {
           >
             Race
           </Link>
+          <Link
+            href="/dashboard"
+            className="text-sm text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
+          >
+            Mission control
+          </Link>
         </nav>
 
-        <Link href="#race" className="btn btn-primary h-9 px-4 text-sm">
-          Watch live
+        <Link href="/dashboard" className="btn btn-primary h-9 px-4 text-sm">
+          Open dashboard
         </Link>
       </div>
     </header>

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, CSSProperties } from 'react';
+import Link from 'next/link';
 import { C1, C2, CV, BG, SURFACE, SURFACE2, BORDER, BORDER2 } from './tokens';
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
@@ -151,11 +152,18 @@ export function CameraFeed({
   label,
   mode = 'manual',
   style,
+  src,
+  resolution,
 }: {
   color: string;
   label: string;
   mode?: 'manual' | 'auto';
   style?: CSSProperties;
+  /** Optional MJPEG / image URL. When provided, the synthetic canvas is
+   *  replaced with a live <img> stream and the canvas animation is skipped. */
+  src?: string;
+  /** Resolution label rendered in the bottom-right HUD. */
+  resolution?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -163,6 +171,7 @@ export function CameraFeed({
   const swayRef = useRef<number>(0);
 
   useEffect(() => {
+    if (src) return; // live MJPEG mode — no canvas animation
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -272,16 +281,31 @@ export function CameraFeed({
 
     animRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animRef.current);
-  }, [color, mode]);
+  }, [color, mode, src]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', borderRadius: 4, ...style }}>
-      <canvas
-        ref={canvasRef}
-        width={640}
-        height={400}
-        style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover' }}
-      />
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src}
+          alt={label}
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'block',
+            objectFit: 'cover',
+            background: '#0a0e1a',
+          }}
+        />
+      ) : (
+        <canvas
+          ref={canvasRef}
+          width={640}
+          height={400}
+          style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover' }}
+        />
+      )}
       {/* Top HUD */}
       <div style={{
         position: 'absolute',
@@ -311,7 +335,7 @@ export function CameraFeed({
         <Label suppressHydrationWarning style={{ fontSize: 9 }}>
           REC {new Date().toISOString().slice(11, 19)}
         </Label>
-        <Label style={{ fontSize: 9 }}>640×480</Label>
+        <Label style={{ fontSize: 9 }}>{resolution ?? '640×480'}</Label>
       </div>
     </div>
   );
@@ -533,8 +557,24 @@ export function TrackMap({ car1T, car2T }: { car1T: number; car2T: number }) {
 
 // ─── LossChart ────────────────────────────────────────────────────────────────
 
-export function LossChart({ points, progress }: { points: number[]; progress: number }) {
+export function LossChart({
+  points,
+  progress,
+  valPoints,
+  color,
+  height = 200,
+}: {
+  points: number[];
+  progress: number;
+  /** Optional second series rendered as a dashed line (e.g. validation/test loss). */
+  valPoints?: number[];
+  /** Primary line color. Defaults to CV. */
+  color?: string;
+  /** Canvas display height in px. */
+  height?: number;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lineColor = color ?? CV;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -546,6 +586,7 @@ export function LossChart({ points, progress }: { points: number[]; progress: nu
     const H = canvas.height;
     const visible = Math.max(2, Math.floor(progress * points.length));
     const visiblePts = points.slice(0, visible);
+    const visibleVal = valPoints ? valPoints.slice(0, visible) : null;
 
     ctx.clearRect(0, 0, W, H);
 
@@ -556,7 +597,11 @@ export function LossChart({ points, progress }: { points: number[]; progress: nu
     const chartW = W - padL - padR;
     const chartH = H - padT - padB;
 
-    const maxY = Math.max(...visiblePts, 0.5);
+    const maxY = Math.max(
+      ...visiblePts,
+      ...(visibleVal ?? []),
+      0.5,
+    );
     const minY = 0;
 
     const toX = (i: number) => padL + (i / (points.length - 1)) * chartW;
@@ -597,8 +642,8 @@ export function LossChart({ points, progress }: { points: number[]; progress: nu
 
     // Gradient fill
     const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH);
-    grad.addColorStop(0, CV + '60');
-    grad.addColorStop(1, CV + '00');
+    grad.addColorStop(0, lineColor + '60');
+    grad.addColorStop(1, lineColor + '00');
 
     ctx.beginPath();
     ctx.moveTo(toX(0), toY(visiblePts[0]));
@@ -611,15 +656,32 @@ export function LossChart({ points, progress }: { points: number[]; progress: nu
     ctx.fillStyle = grad;
     ctx.fill();
 
+    // Validation line (dashed, drawn beneath the main glow line)
+    if (visibleVal && visibleVal.length >= 2) {
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(toX(0), toY(visibleVal[0]));
+      for (let i = 1; i < visibleVal.length; i++) {
+        ctx.lineTo(toX(i), toY(visibleVal[i]));
+      }
+      ctx.strokeStyle = '#f97316';
+      ctx.lineWidth = 1.5;
+      ctx.shadowColor = '#f97316';
+      ctx.shadowBlur = 6;
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Glowing line
     ctx.beginPath();
     ctx.moveTo(toX(0), toY(visiblePts[0]));
     for (let i = 1; i < visiblePts.length; i++) {
       ctx.lineTo(toX(i), toY(visiblePts[i]));
     }
-    ctx.strokeStyle = CV;
+    ctx.strokeStyle = lineColor;
     ctx.lineWidth = 2;
-    ctx.shadowColor = CV;
+    ctx.shadowColor = lineColor;
     ctx.shadowBlur = 8;
     ctx.stroke();
     ctx.shadowBlur = 0;
@@ -629,74 +691,52 @@ export function LossChart({ points, progress }: { points: number[]; progress: nu
     const lastY = toY(visiblePts[visiblePts.length - 1]);
     ctx.beginPath();
     ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
-    ctx.fillStyle = CV;
-    ctx.shadowColor = CV;
+    ctx.fillStyle = lineColor;
+    ctx.shadowColor = lineColor;
     ctx.shadowBlur = 12;
     ctx.fill();
     ctx.shadowBlur = 0;
-  }, [points, progress]);
+  }, [points, progress, valPoints, lineColor]);
 
   return (
     <canvas
       ref={canvasRef}
       width={520}
-      height={200}
-      style={{ width: '100%', height: 200, display: 'block' }}
+      height={height * 1}
+      style={{ width: '100%', height, display: 'block' }}
     />
   );
 }
 
-// ─── MQTT Data ────────────────────────────────────────────────────────────────
+// ─── MQTT Log ────────────────────────────────────────────────────────────────
 
-const MQTT_MSGS: Array<[string, string, string]> = [
-  [C1, 'car/1/frame', '42.1 kb · JPEG · 640×480'],
-  [C1, 'car/1/cmd', 'steer=+0.12  throttle=0.68'],
-  [C1, 'car/1/telemetry', 'bat=87%  temp=42°C  wifi=-52dBm'],
-  [C2, 'car/2/frame', '41.8 kb · JPEG · 640×480'],
-  [C2, 'car/2/cmd', 'steer=-0.07  throttle=0.71'],
-  [C2, 'car/2/telemetry', 'bat=91%  temp=39°C  wifi=-48dBm'],
-  ['#22c55e', 'race/lap', 'car=1  time=28.413s  lap=3'],
-  ['#22c55e', 'race/lap', 'car=2  time=29.102s  lap=3'],
-  ['#22c55e', 'race/state', 'GREEN_FLAG'],
-  ['#8b5cf6', 'leap/hand', 'steer=+0.45  throttle=0.80  height=220mm'],
-  ['#8b5cf6', 'trainer/loss', 'epoch=47  loss=0.0823  lr=1e-4'],
-  ['#8b5cf6', 'trainer/loss', 'epoch=48  loss=0.0791  lr=1e-4'],
-  ['#eab308', 'race/tower', 'light=GREEN  buzzer=ON'],
-  [C1, 'car/1/lap', 'crossing=detected  count=4'],
-];
+import { useMqttLog } from '../../lib/useMqttLog';
 
-interface MQTTEntry {
-  id: number;
-  ts: string;
-  color: string;
-  topic: string;
-  payload: string;
+function topicColor(topic: string): string {
+  if (topic.startsWith('car/1')) return C1;
+  if (topic.startsWith('car/2')) return C2;
+  if (topic.startsWith('race')) return '#22c55e';
+  if (topic.startsWith('trainer') || topic.startsWith('leap')) return CV;
+  if (topic.startsWith('device')) return '#eab308';
+  return 'rgba(255,255,255,0.6)';
+}
+
+function fmtMqttTs(ts: number): string {
+  const d = new Date(ts * 1000);
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const pad3 = (n: number) => String(n).padStart(3, '0');
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}`;
 }
 
 export function MQTTLog() {
-  const [entries, setEntries] = useState<MQTTEntry[]>([]);
+  const records = useMqttLog();
   const listRef = useRef<HTMLDivElement>(null);
-  const idRef = useRef<number>(0);
-
-  useEffect(() => {
-    const add = () => {
-      const msg = MQTT_MSGS[Math.floor(Math.random() * MQTT_MSGS.length)];
-      const now = new Date();
-      const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}.${String(now.getMilliseconds()).padStart(3, '0')}`;
-      setEntries(prev => {
-        const next = [...prev, { id: idRef.current++, ts, color: msg[0], topic: msg[1], payload: msg[2] }];
-        return next.slice(-100);
-      });
-    };
-    const id = setInterval(add, 160);
-    return () => clearInterval(id);
-  }, []);
 
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
-  }, [entries]);
+  }, [records]);
 
   return (
     <div
@@ -710,11 +750,16 @@ export function MQTTLog() {
         padding: '8px 12px',
       }}
     >
-      {entries.map(e => (
-        <div key={e.id} style={{ display: 'flex', gap: 10, whiteSpace: 'nowrap' }}>
-          <span style={{ color: 'rgba(255,255,255,0.25)', flexShrink: 0 }}>{e.ts}</span>
-          <span style={{ color: e.color, flexShrink: 0, minWidth: 120 }}>{e.topic}</span>
-          <span style={{ color: 'rgba(255,255,255,0.55)' }}>{e.payload}</span>
+      {records.length === 0 && (
+        <div style={{ color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' as const }}>
+          Waiting for MQTT messages on car/+/+, race/+, device/+/+, leap/+, trainer/+ …
+        </div>
+      )}
+      {records.map((e, i) => (
+        <div key={i + ':' + e.ts} style={{ display: 'flex', gap: 10, whiteSpace: 'nowrap' }}>
+          <span style={{ color: 'rgba(255,255,255,0.25)', flexShrink: 0 }}>{fmtMqttTs(e.ts)}</span>
+          <span style={{ color: topicColor(e.topic), flexShrink: 0, minWidth: 160 }}>{e.topic}</span>
+          <span style={{ color: 'rgba(255,255,255,0.55)', overflow: 'hidden', textOverflow: 'ellipsis' as const }}>{e.payload}</span>
         </div>
       ))}
     </div>
@@ -724,21 +769,37 @@ export function MQTTLog() {
 // ─── DeviceHealth ─────────────────────────────────────────────────────────────
 
 export function DeviceHealth() {
-  const [tick, setTick] = useState(0);
+  type Device = { name: string; sub: string; metrics: Record<string, string> };
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 3000);
-    return () => clearInterval(id);
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as { devices: Device[] };
+        if (!cancelled) {
+          setDevices(data.devices);
+          setErr(null);
+        }
+      } catch (e) {
+        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+      }
+    };
+    refresh();
+    const id = setInterval(refresh, 2500);
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  const devices = [
-    { name: 'DeepRacer #1', sub: '192.168.1.101', metrics: { CPU: '34%', RAM: '61%', WIFI: '-52dBm' } },
-    { name: 'DeepRacer #2', sub: '192.168.1.102', metrics: { CPU: '38%', RAM: '58%', WIFI: '-48dBm' } },
-    { name: 'DeepLens', sub: '192.168.1.105', metrics: { FPS: '15', TEMP: '56°C', WIFI: '-55dBm' } },
-    { name: 'ESP32 Tower', sub: '192.168.1.110', metrics: { HEAP: '82%', UPTIME: '01:23' } },
-    { name: 'MQTT Broker', sub: '127.0.0.1:1883', metrics: { CLIENTS: '5', 'MSG/S': `${44 + (tick % 8)}` } },
-    { name: 'Leap Motion', sub: 'USB / HID', metrics: { FPS: '115', HANDS: '1' } },
-  ];
+  if (err && devices.length === 0) {
+    return <div style={{
+      color: 'rgba(255,255,255,0.4)',
+      fontFamily: "var(--font-jetbrains-mono), monospace",
+      fontSize: 11,
+    }}>health unavailable: {err}</div>;
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -794,7 +855,6 @@ const ACT_CONFIG: Array<{ label: string; color: string }> = [
   { label: 'CAPTURE', color: C1 },
   { label: 'CLONE', color: CV },
   { label: 'RACE', color: C2 },
-  { label: 'DEBUG', color: 'rgba(255,255,255,0.4)' },
 ];
 
 export function TopBar({ act, onActChange }: { act: number; onActChange: (n: number) => void }) {
@@ -803,7 +863,7 @@ export function TopBar({ act, onActChange }: { act: number; onActChange: (n: num
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const n = parseInt(e.key);
-      if (n >= 1 && n <= 4) onActChange(n);
+      if (n >= 1 && n <= 3) onActChange(n);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -834,8 +894,6 @@ export function TopBar({ act, onActChange }: { act: number; onActChange: (n: num
         }}>
           GHOST RACER
         </span>
-        <Divider vertical style={{ height: 20 }} />
-        <Label>MISSION CONTROL</Label>
       </div>
 
       {/* Spacer */}
