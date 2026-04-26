@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Webcam hand tracking -> MQTT car/{CAR_ID}/cmd -> live DeepRacer.
 
-Pairs with car_bridge/command_subscriber.py running on the car. Wave a hand at
-the webcam; the car mirrors it. Uses the same calibrated hand controls as
-ghost_racer (arm-rotation steering, openness throttle).
+Pairs with car_bridge/command_subscriber.py running on the car. Show both
+hands to the webcam; the car mirrors them. Uses the SAME HandController
+as the ghost_racer RL sim, so the calibration profile saved at
+DEFAULT_CALIB_PATH is shared between sim and live driving.
+
+Control mapping (tank drive, depth-based):
+  - LEFT  hand size (close to camera = forward) -> left tread
+  - RIGHT hand size (close to camera = forward) -> right tread
+  - throttle = (L + R) / 2,  steer = soft_curve((L - R) / 2)
 
 Env: CAR_ID, MQTT_BROKER, MQTT_PORT (same as smoke_cmd.py / view_frames.py).
 """
@@ -18,7 +24,7 @@ import numpy as np
 import paho.mqtt.client as mqtt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ghost_racer.control.hand_control import (DEFAULT_CALIB_PATH,
+from ghost_racer.control.hand_control import (DEFAULT_CALIB_PATH, STEER_MAX,
                                               HandController)
 
 CAR_ID = os.environ.get("CAR_ID", "1")
@@ -27,6 +33,13 @@ PORT = int(os.environ.get("MQTT_PORT", "1883"))
 TOPIC = f"car/{CAR_ID}/cmd"
 
 NO_HAND_TIMEOUT_S = 0.5
+
+# Turn assist: real-car drivetrain has too much static friction at low throttle
+# to actually pivot. When the user is steering, deliver extra power so the
+# wheels actually rotate.
+TURN_ASSIST_FLOOR = 0.35   # min |throttle| at full |steer| (overrides user 0)
+TURN_BOOST_GAIN = 1.5      # cap multiplier added at full |steer|
+TURN_BOOST_CAP = 0.85      # absolute ceiling regardless of boost
 
 
 def main() -> None:
@@ -59,7 +72,7 @@ def main() -> None:
     elif not has_saved:
         should_calibrate = True
         if os.path.exists(DEFAULT_CALIB_PATH):
-            print("[note] saved profile predates arm-rotation steering; recalibrating.")
+            print("[note] saved profile predates the current tank-drive schema; recalibrating.")
         else:
             print("no saved calibration found; running first-time calibration.")
     else:
@@ -111,8 +124,21 @@ def main() -> None:
             else:
                 steer, throttle = reading.steer, reading.throttle
 
-            throttle_out = float(np.clip(throttle, -args.max_throttle, args.max_throttle))
             steer_out = float(np.clip(steer, -1.0, 1.0))
+
+            # turn assist: scale a floor + cap by how hard the user is steering
+            steer_mag = min(1.0, abs(steer_out) / max(STEER_MAX, 1e-6))
+            assisted = throttle
+            floor = TURN_ASSIST_FLOOR * steer_mag
+            if abs(assisted) < floor:
+                # respect direction; default to forward when user is at idle
+                sign = 1.0 if assisted >= 0 else -1.0
+                assisted = sign * floor
+            turn_cap = min(TURN_BOOST_CAP,
+                           args.max_throttle * (1.0 + TURN_BOOST_GAIN * steer_mag))
+
+            # physical car wires throttle opposite to sim convention
+            throttle_out = float(np.clip(-assisted, -turn_cap, turn_cap))
 
             if now >= next_pub:
                 publish(steer_out, throttle_out)
