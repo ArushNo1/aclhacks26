@@ -216,12 +216,21 @@ function PovSourceToggle({
 
 // ─── Backend health detection ──────────────────────────────────────────────
 // Polls /api/status. Marks backend as "down" only after MAX_FAILS consecutive
-// failures so a single transient blip doesn't flash the modal.
+// failures so a single transient blip doesn't flash the modal. On a remote
+// host (Vercel etc.) the backend is by definition unreachable — short-circuit
+// to "down" immediately and skip polling.
 function useBackendDown(): boolean {
-  const [down, setDown] = useState(false);
+  // On a remote host, start as "down" so the modal shows on first paint.
+  const [down, setDown] = useState(() =>
+    typeof window !== 'undefined' && !isLocalHost(window.location.host),
+  );
   const failsRef = useRef(0);
 
   useEffect(() => {
+    if (typeof window !== 'undefined' && !isLocalHost(window.location.host)) {
+      return;
+    }
+
     let cancelled = false;
     const MAX_FAILS = 3;
 
@@ -246,11 +255,27 @@ function useBackendDown(): boolean {
   return down;
 }
 
+// localhost / 127.0.0.1 / ::1 / *.local — anywhere a local backend could
+// actually be reached. Anything else (vercel.app, public DNS) is "remote".
+function isLocalHost(host: string): boolean {
+  if (!host) return false;
+  const h = host.replace(/:\d+$/, '');
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.local');
+}
+
 // ─── Backend-down modal ────────────────────────────────────────────────────
 function BackendDownModal() {
   const [copied, setCopied] = useState(false);
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const cmd = `curl -fsSL ${origin}/install.sh | bash`;
+  const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
+  const isRemote = !isLocalHost(host);
+
+  // On a remote host (vercel.app etc.), `${origin}/install.sh` works because
+  // install.sh is served from web/public — but the dashboard itself can't
+  // reach the user's localhost backend, so we tell them to run it locally.
+  const cmd = isRemote
+    ? `curl -fsSL ${origin}/install.sh | bash && cd ghost-racer && ./run.sh`
+    : `curl -fsSL ${origin}/install.sh | bash`;
 
   const copy = () => {
     navigator.clipboard?.writeText(cmd).then(
@@ -302,7 +327,7 @@ function BackendDownModal() {
             color: '#f43f5e',
             fontWeight: 700,
           }}>
-            BACKEND OFFLINE
+            {isRemote ? 'LOCAL-ONLY APP' : 'BACKEND OFFLINE'}
           </span>
         </div>
 
@@ -314,7 +339,9 @@ function BackendDownModal() {
           color: '#fff',
           letterSpacing: '0.02em',
         }}>
-          uvicorn isn&apos;t running.
+          {isRemote
+            ? 'this dashboard runs locally.'
+            : 'uvicorn isn’t running.'}
         </h2>
 
         <p style={{
@@ -324,12 +351,21 @@ function BackendDownModal() {
           lineHeight: 1.6,
           color: 'rgba(255,255,255,0.65)',
         }}>
-          The dashboard can&apos;t reach the Python backend at <code style={{
-            background: 'rgba(255,255,255,0.06)',
-            padding: '1px 6px',
-            borderRadius: 3,
-          }}>localhost:8000</code>. Run this in a terminal to install a venv with uvicorn,
-          then start the server.
+          {isRemote ? (
+            <>
+              ghost-racer talks to a Python backend, a webcam, and a physical car
+              over MQTT — none of which can be reached from{' '}
+              <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 3 }}>{host}</code>.
+              Clone, install, and run it on your own machine:
+            </>
+          ) : (
+            <>
+              The dashboard can&apos;t reach the Python backend at{' '}
+              <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 3 }}>localhost:8000</code>.
+              Run this once to install, then start everything with{' '}
+              <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 3 }}>./run.sh</code>.
+            </>
+          )}
         </p>
 
         <div style={{
@@ -376,13 +412,12 @@ function BackendDownModal() {
           color: 'rgba(255,255,255,0.5)',
           lineHeight: 1.6,
         }}>
-          <span>then:</span>
-          <code style={{ color: 'rgba(255,255,255,0.75)' }}>
-            source .venv/bin/activate
-          </code>
-          <code style={{ color: 'rgba(255,255,255,0.75)' }}>
-            python -m uvicorn ghost_racer.server.app:app --port 8000
-          </code>
+          <span>{isRemote
+            ? 'this clones the repo, sets up the venv, installs npm deps, and starts both servers.'
+            : 'run.sh starts uvicorn (:8000) and the next dev server (:3000) together.'}</span>
+          <span>then open{' '}
+            <code style={{ color: 'rgba(255,255,255,0.85)' }}>http://localhost:3000</code>.
+          </span>
         </div>
 
         <div style={{
@@ -391,7 +426,9 @@ function BackendDownModal() {
           color: 'rgba(255,255,255,0.35)',
           letterSpacing: '0.05em',
         }}>
-          this dialog will close automatically once the server responds.
+          {isRemote
+            ? 'this hosted page is just a landing card — it can’t connect to your machine.'
+            : 'this dialog will close automatically once the server responds.'}
         </div>
       </div>
     </div>
