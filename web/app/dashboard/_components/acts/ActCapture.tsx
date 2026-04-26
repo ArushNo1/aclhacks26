@@ -94,16 +94,8 @@ export function ActCapture() {
           onCapStop={onCapStop}
         />
 
-        {/* Player POV + spectator, split 50/50 across the row */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: 12,
-          minHeight: 0,
-        }}>
-          <PlayerPOV car1Lap={car1Lap} car2Lap={car2Lap} />
-          <Spectator />
-        </div>
+        {/* Player POV fills the full content row */}
+        <PlayerPOV car1Lap={car1Lap} car2Lap={car2Lap} />
 
         <TelemetryStrip
           frames={frames}
@@ -139,6 +131,8 @@ export function ActCapture() {
         />
 
         <TankInputCard steer={steer} throttle={throttle} />
+
+        <Spectator />
 
         {cap?.last_save_path && <LastSaveCard path={cap.last_save_path} />}
       </div>
@@ -253,10 +247,9 @@ function Spectator() {
         overflow: 'hidden',
         position: 'relative' as const,
       }),
-      // Grid cell stretches us to fill its 50% column. The image inside
-      // uses objectFit:contain so the full 600x600 render stays visible
-      // (with horizontal letterboxing on wide cells).
-      minHeight: 0,
+      width: '100%',
+      aspectRatio: '1 / 1',
+      flexShrink: 0,
     }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img

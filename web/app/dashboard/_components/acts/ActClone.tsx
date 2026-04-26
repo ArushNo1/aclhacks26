@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import {
   Label, Dot, Divider,
   LossChart,
-  C2, CV, BG, BORDER,
+  C2, CV, BG, SURFACE, BORDER,
 } from '../shared';
 import { api } from '../../../lib/api';
 import { useTraining, useStream } from '../../../lib/useStream';
@@ -390,7 +390,7 @@ function TrainAnimation({ active, progress, color }: { active: boolean; progress
         position: 'relative',
         width: '100%',
         height: '100%',
-        background: 'linear-gradient(180deg, #0a0e1a 0%, #060810 100%)',
+        background: `linear-gradient(180deg, ${SURFACE} 0%, ${BG} 100%)`,
         border: `1px solid ${BORDER}`,
         borderRadius: 4,
         overflow: 'hidden',

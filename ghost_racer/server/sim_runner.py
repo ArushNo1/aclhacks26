@@ -61,6 +61,11 @@ class SimRunner:
         self._race_started_at: Optional[float] = None  # monotonic time when lights turned green
         self._light_task: Optional[asyncio.Task] = None
 
+        # Freeze gate: when True, both cars receive zero action so the grid
+        # stays stationary. Set by reset_race() / start_race(); cleared the
+        # instant the lights go green.
+        self._frozen: bool = False
+
         # Lap detection: track previous lap counts so we can record times.
         self._prev_lap_ego = 0
         self._prev_lap_opp = 0
@@ -218,7 +223,11 @@ class SimRunner:
             except Exception:
                 pass
 
-        # 4. step env
+        # 4. step env (frozen until green light: zero both actions so the
+        # grid stays stationary through the start-light countdown).
+        if self._frozen:
+            human_action = np.zeros(2, dtype=np.float32)
+            ai_action = np.zeros(2, dtype=np.float32)
         self._ai_obs, reward, terminated, truncated, info = self.env.step(
             ai_action, opp_action=human_action
         )
@@ -309,6 +318,7 @@ class SimRunner:
             self.state.race.light_phase = "off"
             self.state.race.started = False
         self._race_started_at = None
+        self._frozen = True
 
         # Cancel any in-flight light sequence
         if self._light_task is not None and not self._light_task.done():
@@ -329,6 +339,7 @@ class SimRunner:
                 self.state.race.light_phase = "green"
                 self.state.race.started = True
             self._race_started_at = time.monotonic()
+            self._frozen = False
         except asyncio.CancelledError:
             return
 
@@ -336,6 +347,7 @@ class SimRunner:
         if self._light_task is not None and not self._light_task.done():
             self._light_task.cancel()
         self._race_started_at = None
+        self._frozen = True
         with self.state.lock():
             self.state.phase = "idle"
             self.state.race.light_phase = "off"

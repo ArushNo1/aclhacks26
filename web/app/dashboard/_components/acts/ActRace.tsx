@@ -4,8 +4,8 @@ import React from 'react';
 import {
   Label, Dot, Divider,
   CameraFeed, SteeringGauge, ThrottleBar,
-  RaceLights, TrackMap,
-  C1, C2, BG, BORDER, SURFACE2,
+  RaceLights,
+  C1, C2, BG, SURFACE2,
 } from '../shared';
 import { api } from '../../../lib/api';
 import { useRace, useHand, useStream, useTraining, useCapture } from '../../../lib/useStream';
@@ -83,18 +83,16 @@ export function ActRace({ car1Name, car2Name }: { car1Name: string; car2Name: st
           onRaceReset={onReset}
         />
 
-        {/* Player POV vs Clone POV, split 50/50 — same skeleton as capture */}
+        {/* Player POV fills the center; Clone POV is overlaid as a PIP in the top-left. */}
         <div style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: 12,
-          minHeight: 0,
           position: 'relative' as const,
+          minHeight: 0,
+          display: 'flex',
         }}>
-          <PlayerPOV name={car1Name} lap={car1Lap} best={car1Best} last={car1Last} />
-          <ClonePOV name={car2Name} lap={car2Lap} best={car2Best} last={car2Last} polVer={polVer} />
-          {/* "VS" badge sits over the seam to make the duel obvious */}
-          <VsBadge />
+          <div style={{ flex: 1, minWidth: 0, display: 'flex' }}>
+            <PlayerPOV name={car1Name} lap={car1Lap} best={car1Best} last={car1Last} />
+          </div>
+          <ClonePiP name={car2Name} lap={car2Lap} best={car2Best} last={car2Last} polVer={polVer} />
         </div>
 
         <TelemetryStrip
@@ -217,10 +215,12 @@ function PlayerPOV({
 }) {
   return (
     <div style={{
+      flex: 1,
       display: 'flex',
       flexDirection: 'column',
       gap: 6,
       minHeight: 0,
+      minWidth: 0,
     }}>
       <div style={{
         display: 'flex',
@@ -266,8 +266,8 @@ function PlayerPOV({
   );
 }
 
-// ─── Clone POV — labeled hard so it's obvious the AI is *you* ──────────────
-function ClonePOV({
+// ─── Clone PIP — picture-in-picture overlay anchored to the top-right ──────
+function ClonePiP({
   name, lap, best, last, polVer,
 }: {
   name: string;
@@ -278,118 +278,79 @@ function ClonePOV({
 }) {
   return (
     <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 6,
-      minHeight: 0,
+      position: 'absolute',
+      top: 32,
+      right: 12,
+      width: 'min(28%, 320px)',
+      aspectRatio: '4 / 3',
+      borderRadius: 6,
+      overflow: 'hidden',
+      border: `1px solid ${C2}66`,
+      boxShadow: `0 0 24px ${C2}33, 0 6px 24px rgba(0,0,0,0.55)`,
+      background: BG,
+      zIndex: 5,
     }}>
+      <CameraFeed
+        color={C2}
+        label={`${name} · CLONE POV`}
+        src="/stream/ai.mjpg"
+        resolution="160×120"
+        style={{ height: '100%' }}
+      />
+      {/* Top strip: YOUR CLONE label + lap/best */}
       <div style={{
+        position: 'absolute',
+        top: 0, left: 0, right: 0,
+        padding: '5px 8px',
         display: 'flex',
         alignItems: 'center',
-        gap: 10,
-        padding: '0 4px',
+        gap: 6,
+        background: 'linear-gradient(to bottom, rgba(0,0,0,0.75), transparent)',
+        pointerEvents: 'none' as const,
       }}>
         <span style={{
           fontFamily: "var(--font-orbitron), 'Orbitron', sans-serif",
-          fontSize: 11,
+          fontSize: 9,
           fontWeight: 700,
           letterSpacing: '0.2em',
           color: C2,
           textShadow: `0 0 8px ${C2}80`,
         }}>YOUR CLONE</span>
-        <Label style={{ color: 'rgba(255,255,255,0.5)' }}>{name}</Label>
-        <Label>LAP {lap}</Label>
+        <Label style={{ fontSize: 8, color: 'rgba(255,255,255,0.5)' }}>{name}</Label>
         <div style={{ flex: 1 }} />
-        <Label style={{ color: 'rgba(255,255,255,0.4)' }}>
-          LAST {last !== null ? `${last.toFixed(2)}s` : '--'}
-        </Label>
-        <Label style={{ color: '#22c55e' }}>
-          BEST {best !== null ? `${best.toFixed(2)}s` : '--'}
-        </Label>
+        <Label style={{ fontSize: 8 }}>LAP {lap}</Label>
+        {best !== null && (
+          <Label style={{ fontSize: 8, color: '#22c55e' }}>BEST {best.toFixed(2)}s</Label>
+        )}
       </div>
+      {/* Bottom strip: trained-on-you watermark */}
       <div style={{
-        flex: 1,
-        minHeight: 0,
-        borderRadius: 6,
-        overflow: 'hidden',
-        border: `1px solid ${C2}33`,
-        boxShadow: `0 0 24px ${C2}22`,
-        position: 'relative' as const,
+        position: 'absolute',
+        bottom: 0, left: 0, right: 0,
+        padding: '5px 8px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        background: 'linear-gradient(to top, rgba(0,0,0,0.75), transparent)',
+        pointerEvents: 'none' as const,
       }}>
-        <CameraFeed
-          color={C2}
-          label={`${name} · CLONE POV`}
-          src="/stream/ai.mjpg"
-          resolution="160×120"
-          style={{ height: '100%' }}
-        />
-        {/* Watermark across the AI feed — “a copy of you” is the whole point */}
-        <div style={{
-          position: 'absolute',
-          left: '50%',
-          bottom: 32,
-          transform: 'translateX(-50%)',
-          padding: '4px 10px',
-          background: 'rgba(0,0,0,0.55)',
-          border: `1px solid ${C2}55`,
-          borderRadius: 3,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          pointerEvents: 'none' as const,
+        <Dot color={C2} size={5} pulse />
+        <span style={{
+          fontFamily: "var(--font-jetbrains-mono), monospace",
+          fontSize: 8,
+          letterSpacing: '0.18em',
+          color: C2,
+          textTransform: 'uppercase' as const,
         }}>
-          <Dot color={C2} size={6} pulse />
-          <span style={{
-            fontFamily: "var(--font-jetbrains-mono), monospace",
-            fontSize: 10,
-            letterSpacing: '0.18em',
-            color: C2,
-            textTransform: 'uppercase' as const,
-          }}>
-            TRAINED ON YOU · {polVer ?? 'v1'}
-          </span>
-        </div>
+          TRAINED ON YOU · {polVer ?? 'v1'}
+        </span>
+        <div style={{ flex: 1 }} />
+        {last !== null && (
+          <Label style={{ fontSize: 8, color: 'rgba(255,255,255,0.55)' }}>
+            LAST {last.toFixed(2)}s
+          </Label>
+        )}
       </div>
-    </div>
-  );
-}
-
-// ─── VS badge — sits over the gutter between the two POVs ───────────────────
-function VsBadge() {
-  return (
-    <div style={{
-      position: 'absolute',
-      top: '50%',
-      left: '50%',
-      transform: 'translate(-50%, -50%)',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: 2,
-      padding: '6px 10px',
-      background: 'rgba(6,8,16,0.85)',
-      border: `1px solid ${BORDER}`,
-      borderRadius: 6,
-      pointerEvents: 'none' as const,
-      zIndex: 5,
-      boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
-    }}>
-      <span style={{
-        fontFamily: "var(--font-orbitron), 'Orbitron', sans-serif",
-        fontSize: 14,
-        fontWeight: 900,
-        letterSpacing: '0.15em',
-        background: `linear-gradient(90deg, ${C1}, ${C2})`,
-        WebkitBackgroundClip: 'text',
-        WebkitTextFillColor: 'transparent',
-        backgroundClip: 'text',
-      }}>VS</span>
-      <span style={{
-        fontFamily: "var(--font-jetbrains-mono), monospace",
-        fontSize: 8,
-        letterSpacing: '0.2em',
-        color: 'rgba(255,255,255,0.45)',
-      }}>SELF · DUEL</span>
     </div>
   );
 }
@@ -559,35 +520,42 @@ function DriverInputCard({ steer, throttle, name }: { steer: number; throttle: n
         <SteeringGauge value={steer} color={C1} />
         <ThrottleBar value={throttle} color={C1} />
       </div>
-      <Divider />
-      <KV label="STEER" value={steer >= 0 ? `+${steer.toFixed(3)}` : steer.toFixed(3)} color={C1} />
-      <KV label="THROTTLE" value={throttle.toFixed(3)} color={C1} />
-      <Label style={{ color: 'rgba(255,255,255,0.35)', fontSize: 9 }}>
-        Your clone learned to drive from this exact input stream.
-      </Label>
     </div>
   );
 }
 
-// ─── Right rail: Spectator mini-map ────────────────────────────────────────
-function SpectatorMiniMap({ car1T, car2T }: { car1T: number; car2T: number }) {
+// ─── Right rail: Spectator bird's-eye camera ───────────────────────────────
+function SpectatorMiniMap({ car1T: _car1T, car2T: _car2T }: { car1T: number; car2T: number }) {
   return (
-    <div style={card({ display: 'flex', flexDirection: 'column', gap: 8 })}>
-      <Label>SPECTATOR · TOP-DOWN</Label>
-      <div style={{ display: 'flex', justifyContent: 'center' }}>
-        <TrackMap car1T={car1T} car2T={car2T} />
-      </div>
-      <Divider />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Dot color={C1} size={7} />
-          <Label style={{ color: C1 }}>YOU</Label>
-        </div>
-        <div style={{ flex: 1 }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Dot color={C2} size={7} />
-          <Label style={{ color: C2 }}>YOUR CLONE</Label>
-        </div>
+    <div style={{
+      ...card({
+        padding: 0,
+        overflow: 'hidden',
+        position: 'relative' as const,
+      }),
+      aspectRatio: '1 / 1',
+    }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/stream/spectator.mjpg"
+        alt="top-down spectator"
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'contain',
+          background: '#0a0e1a',
+          display: 'block',
+        }}
+      />
+      <div style={{
+        position: 'absolute',
+        top: 8,
+        left: 10,
+        padding: '2px 6px',
+        background: 'rgba(0,0,0,0.55)',
+        borderRadius: 3,
+      }}>
+        <Label>SPECTATOR · TOP-DOWN</Label>
       </div>
     </div>
   );

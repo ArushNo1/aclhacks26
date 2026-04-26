@@ -20,7 +20,7 @@ import os
 import sys
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -81,6 +81,8 @@ class TrainingManager:
         self.last_val_mse: Optional[float] = None
         self.pending_reload = False
         self._start_t: Optional[float] = None
+        # Per-epoch (epoch, train_loss, val_loss) tuples, drained by the UI pump.
+        self._epoch_log: List[Tuple[int, float, float]] = []
 
     def maybe_start(self) -> bool:
         with self._lock:
@@ -89,14 +91,29 @@ class TrainingManager:
             self.training = True
             self.last_status = "training BC..."
             self._start_t = time.time()
+            self._epoch_log.clear()
         threading.Thread(target=self._run, daemon=True).start()
         return True
+
+    def _on_epoch(self, epoch: int, train_loss: float, val_loss: float) -> None:
+        with self._lock:
+            self._epoch_log.append((epoch, train_loss, val_loss))
+            self.last_status = (
+                f"epoch {epoch}/{self.epochs}  "
+                f"train={train_loss:.4f}  val={val_loss:.4f}"
+            )
+
+    def drain_epochs(self) -> List[Tuple[int, float, float]]:
+        with self._lock:
+            out = list(self._epoch_log)
+            self._epoch_log.clear()
+            return out
 
     def _run(self):
         try:
             from .agent.bc_train import train_bc
             best = train_bc(self.data_dir, self.bc_out, epochs=self.epochs,
-                            device="cpu", verbose=False)
+                            device="cpu", verbose=False, on_epoch=self._on_epoch)
             with self._lock:
                 self.last_val_mse = float(best)
                 self.last_status = f"BC ready (val={best:.3f})"

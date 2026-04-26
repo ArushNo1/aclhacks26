@@ -257,6 +257,11 @@ async def train_start(p: TrainPayload) -> Dict[str, Any]:
         runner.state.training.total_epochs = tm.epochs
         runner.state.training.last_status = tm.last_status
         runner.state.phase = "training"
+        if started:
+            # Fresh run — clear the previous chart so progress starts at 0.
+            runner.state.training.loss_points = []
+            runner.state.training.current_epoch = 0
+            runner.state.training.current_loss = 0.0
     # The TrainingManager reports "pending_reload" when finished;
     # we poll it from the periodic train-status pump below.
     asyncio.create_task(_train_pump())
@@ -290,22 +295,14 @@ async def _train_pump() -> None:
         await asyncio.sleep(0.5)
         if tm is None:
             return
+        new_epochs = tm.drain_epochs()
         with runner.state.lock():
             runner.state.training.running = tm.training
             runner.state.training.last_status = tm.status_line()
-            if tm.last_val_mse is not None:
-                runner.state.training.current_loss = float(tm.last_val_mse)
-                # Append a fake epoch step every poll so the loss chart moves;
-                # real per-epoch loss requires hooking train_bc, which we leave
-                # for a follow-up. The chart is still useful as progress.
-                if (
-                    not runner.state.training.loss_points
-                    or runner.state.training.loss_points[-1] != float(tm.last_val_mse)
-                ):
-                    runner.state.training.loss_points.append(float(tm.last_val_mse))
-                    runner.state.training.current_epoch = len(
-                        runner.state.training.loss_points
-                    )
+            for epoch, train_loss, _val_loss in new_epochs:
+                runner.state.training.loss_points.append(float(train_loss))
+                runner.state.training.current_epoch = epoch
+                runner.state.training.current_loss = float(train_loss)
         if tm.pending_reload:
             runner.reload_bc()
             tm.pending_reload = False

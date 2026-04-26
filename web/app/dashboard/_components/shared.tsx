@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, CSSProperties } from 'react';
+import Link from 'next/link';
 import { C1, C2, CV, BG, SURFACE, SURFACE2, BORDER, BORDER2 } from './tokens';
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
@@ -715,7 +716,7 @@ function topicColor(topic: string): string {
   if (topic.startsWith('car/1')) return C1;
   if (topic.startsWith('car/2')) return C2;
   if (topic.startsWith('race')) return '#22c55e';
-  if (topic.startsWith('trainer') || topic.startsWith('leap')) return '#8b5cf6';
+  if (topic.startsWith('trainer') || topic.startsWith('leap')) return CV;
   if (topic.startsWith('device')) return '#eab308';
   return 'rgba(255,255,255,0.6)';
 }
@@ -854,7 +855,6 @@ const ACT_CONFIG: Array<{ label: string; color: string }> = [
   { label: 'CAPTURE', color: C1 },
   { label: 'CLONE', color: CV },
   { label: 'RACE', color: C2 },
-  { label: 'DEBUG', color: 'rgba(255,255,255,0.4)' },
 ];
 
 export function TopBar({ act, onActChange }: { act: number; onActChange: (n: number) => void }) {
@@ -863,7 +863,7 @@ export function TopBar({ act, onActChange }: { act: number; onActChange: (n: num
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const n = parseInt(e.key);
-      if (n >= 1 && n <= 4) onActChange(n);
+      if (n >= 1 && n <= 3) onActChange(n);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -894,8 +894,6 @@ export function TopBar({ act, onActChange }: { act: number; onActChange: (n: num
         }}>
           GHOST RACER
         </span>
-        <Divider vertical style={{ height: 20 }} />
-        <Label>MISSION CONTROL</Label>
       </div>
 
       {/* Spacer */}

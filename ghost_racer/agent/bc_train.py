@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
-from typing import List
+from typing import Callable, List, Optional
 
 import numpy as np
 import torch
@@ -37,7 +37,8 @@ def load_sessions(data_dir: str, verbose: bool = True) -> tuple:
 
 
 def train_bc(data_dir: str, out_path: str, epochs: int = 8, batch: int = 64,
-             lr: float = 1e-3, device: str = "cpu", verbose: bool = True) -> float:
+             lr: float = 1e-3, device: str = "cpu", verbose: bool = True,
+             on_epoch: Optional[Callable[[int, float, float], None]] = None) -> float:
     """Returns best val MSE."""
     frames, actions = load_sessions(data_dir, verbose=verbose)
     if verbose:
@@ -92,6 +93,9 @@ def train_bc(data_dir: str, out_path: str, epochs: int = 8, batch: int = 64,
         if verbose:
             tag = "  *best*" if is_best else ""
             print(f"epoch {epoch:02d}  train_mse={train_loss:.4f}  val_mse={val_loss:.4f}{tag}")
+
+        if on_epoch is not None:
+            on_epoch(epoch, float(train_loss), float(val_loss))
 
     if verbose:
         print(f"saved best (val_mse={best_val:.4f}) -> {out_path}")
