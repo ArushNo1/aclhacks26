@@ -122,6 +122,34 @@ async def set_policy(p: PolicyPayload) -> Dict[str, Any]:
     return {"policy_active": p.name}
 
 
+class PovSourcePayload(BaseModel):
+    source: str  # 'sim' | 'car'
+    car_id: Optional[str] = "1"
+
+
+@app.post("/api/pov/source")
+async def set_pov_source(p: PovSourcePayload) -> Dict[str, Any]:
+    """Toggle the player POV source. When 'car', the hand runner publishes
+    (steer, throttle) straight to car/{car_id}/cmd over MQTT — the sim
+    keeps running independently, but the physical car is driven directly
+    from the webcam loop with no race-mechanic gating.
+    """
+    if p.source not in ("sim", "car"):
+        raise HTTPException(status_code=400, detail="source must be 'sim' or 'car'")
+    runner = _runner_obj()
+    hand = runner.hand_runner
+    if hand is None:
+        raise HTTPException(status_code=503, detail="hand runner not attached")
+    bridge = app.state.mqtt_bridge
+    if p.source == "car":
+        if bridge is None:
+            raise HTTPException(status_code=503, detail="MQTT bridge disabled")
+        hand.set_car_mirror(p.car_id or "1", bridge.publish_cmd)
+    else:
+        hand.set_car_mirror(None, None)
+    return {"source": p.source, "car_id": hand.car_mirror_id}
+
+
 @app.post("/api/policy/reload")
 async def reload_policy() -> Dict[str, Any]:
     runner = _runner_obj()

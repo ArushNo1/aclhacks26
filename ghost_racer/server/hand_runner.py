@@ -25,7 +25,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import asdict
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -85,6 +85,32 @@ class HandCaptureRunner:
         self._cal_completed = False
         self._cal_error: Optional[str] = None
         self._cal_last_captured: Optional[float] = None
+
+        # When set, the loop publishes (steer, throttle) straight to the
+        # physical car via MQTT — sim is not involved. Mutated under _lock.
+        self._car_mirror_id: Optional[str] = None
+        self._car_mirror_publish: Optional[Callable[[str, float, float], None]] = None
+
+    def set_car_mirror(
+        self,
+        car_id: Optional[str],
+        publish: Optional[Callable[[str, float, float], None]],
+    ) -> None:
+        """Enable/disable direct MQTT mirroring of (steer, throttle) to a
+        physical car. None disables. The publish callable should take
+        (car_id, steer, throttle) and land on car/{id}/cmd.
+        """
+        with self._lock:
+            if car_id and publish is not None:
+                self._car_mirror_id = car_id
+                self._car_mirror_publish = publish
+            else:
+                self._car_mirror_id = None
+                self._car_mirror_publish = None
+
+    @property
+    def car_mirror_id(self) -> Optional[str]:
+        return self._car_mirror_id
 
     # ----------------------------------------------------------- lifecycle
     def start(self) -> bool:
@@ -159,6 +185,16 @@ class HandCaptureRunner:
             with self._lock:
                 self.last_reading = reading
                 self.last_overlay_frame = overlaid
+                car_id = self._car_mirror_id
+                publish = self._car_mirror_publish
+
+            # Direct MQTT path: bypasses the sim, drives the physical car
+            # at the camera's native rate.
+            if car_id is not None and publish is not None:
+                try:
+                    publish(car_id, float(reading.steer), float(reading.throttle))
+                except Exception as e:
+                    print(f"[hand_runner] car publish failed: {e}")
 
             # Mirror live reading + presence into SimState for the dashboard
             with self.sim_state.lock():

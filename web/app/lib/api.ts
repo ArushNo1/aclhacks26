@@ -149,4 +149,9 @@ export const api = {
     jsonFetch<HandCalibrationStatus>('/api/hand/calibrate/cancel', { method: 'POST' }),
   handReset: () =>
     jsonFetch<HandCalibrationStatus>('/api/hand/reset', { method: 'POST' }),
+  setPovSource: (source: 'sim' | 'car', carId: string = '1') =>
+    jsonFetch<{ source: string; car_id: string | null }>(
+      '/api/pov/source',
+      { method: 'POST', body: JSON.stringify({ source, car_id: carId }) }
+    ),
 };

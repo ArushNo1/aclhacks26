@@ -11,6 +11,7 @@ disables Act 4's MQTT log.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -89,6 +90,20 @@ class MqttBridge:
 
     def broker_url(self) -> str:
         return f"{BROKER}:{PORT}"
+
+    def publish_cmd(self, car_id: str, steer: float, throttle: float) -> None:
+        """Publish a tank-drive command to car/{id}/cmd as JSON."""
+        if not self._connected:
+            return
+        topic = f"car/{car_id}/cmd"
+        payload = json.dumps({
+            "steer": float(steer),
+            "throttle": float(throttle),
+        })
+        try:
+            self._client.publish(topic, payload, qos=0, retain=False)
+        except Exception:
+            pass
 
     def last_jpeg(self, car_id: str) -> Optional[bytes]:
         """Latest JPEG payload received on car/{id}/frame, or None."""

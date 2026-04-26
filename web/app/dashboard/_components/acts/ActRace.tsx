@@ -15,7 +15,7 @@ import { ActButton, ActTitle, KV, card, fmtTime } from './common';
 const RIGHT_RAIL = 360;          // ghost-clone panel width (matches capture)
 const TELEM_HEIGHT = 78;         // bottom stat strip height
 
-export function ActRace({ car1Name, car2Name }: { car1Name: string; car2Name: string }) {
+export function ActRace({ car1Name, car2Name, povSource = 'sim' }: { car1Name: string; car2Name: string; povSource?: 'sim' | 'car' }) {
   const race = useRace();
   const hand = useHand();
   const training = useTraining();
@@ -133,7 +133,7 @@ export function ActRace({ car1Name, car2Name }: { car1Name: string; car2Name: st
           name={car1Name}
         />
 
-        <SpectatorMiniMap car1T={car1T} car2T={car2T} />
+        <SpectatorMiniMap car1T={car1T} car2T={car2T} povSource={povSource} />
       </div>
     </div>
   );
@@ -525,7 +525,8 @@ function DriverInputCard({ steer, throttle, name }: { steer: number; throttle: n
 }
 
 // ─── Right rail: Spectator bird's-eye camera ───────────────────────────────
-function SpectatorMiniMap({ car1T: _car1T, car2T: _car2T }: { car1T: number; car2T: number }) {
+function SpectatorMiniMap({ car1T: _car1T, car2T: _car2T, povSource = 'sim' }: { car1T: number; car2T: number; povSource?: 'sim' | 'car' }) {
+  const isCar = povSource === 'car';
   return (
     <div style={{
       ...card({
@@ -537,8 +538,8 @@ function SpectatorMiniMap({ car1T: _car1T, car2T: _car2T }: { car1T: number; car
     }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/stream/spectator.mjpg"
-        alt="top-down spectator"
+        src={isCar ? '/stream/overhead.mjpg' : '/stream/spectator.mjpg'}
+        alt={isCar ? 'overhead camera' : 'top-down spectator'}
         style={{
           width: '100%',
           height: '100%',
@@ -555,7 +556,7 @@ function SpectatorMiniMap({ car1T: _car1T, car2T: _car2T }: { car1T: number; car
         background: 'rgba(0,0,0,0.55)',
         borderRadius: 3,
       }}>
-        <Label>SPECTATOR · TOP-DOWN</Label>
+        <Label>{isCar ? 'OVERHEAD · LIVE' : 'SPECTATOR · TOP-DOWN'}</Label>
       </div>
     </div>
   );

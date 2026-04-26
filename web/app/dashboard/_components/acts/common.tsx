@@ -89,6 +89,6 @@ export function fmtTime(s: number): string {
 // ─── calibration anchor labels ──────────────────────────────────────────────
 export const ANCHOR_LABEL: Record<string, string> = {
   neutral: 'NEUTRAL',
-  forward: 'CLOSE TO CAMERA',
-  backward: 'FAR FROM CAMERA',
+  forward: 'ABOVE CAMERA',
+  backward: 'BELOW CAMERA',
 };

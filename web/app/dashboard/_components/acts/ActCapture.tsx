@@ -132,7 +132,7 @@ export function ActCapture({ povSource = 'sim' }: { povSource?: 'sim' | 'car' })
 
         <TankInputCard steer={steer} throttle={throttle} />
 
-        <Spectator />
+        <Spectator povSource={povSource} />
 
         {cap?.last_save_path && <LastSaveCard path={cap.last_save_path} />}
       </div>
@@ -255,7 +255,8 @@ function PlayerPOV({
 }
 
 // ─── Spectator (square, full top-down render with no clipping) ─────────────
-function Spectator() {
+function Spectator({ povSource = 'sim' }: { povSource?: 'sim' | 'car' }) {
+  const isCar = povSource === 'car';
   return (
     <div style={{
       ...card({
@@ -269,8 +270,8 @@ function Spectator() {
     }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/stream/spectator.mjpg"
-        alt="top-down spectator"
+        src={isCar ? '/stream/overhead.mjpg' : '/stream/spectator.mjpg'}
+        alt={isCar ? 'overhead camera' : 'top-down spectator'}
         style={{
           width: '100%',
           height: '100%',
@@ -287,7 +288,7 @@ function Spectator() {
         background: 'rgba(0,0,0,0.55)',
         borderRadius: 3,
       }}>
-        <Label>SPECTATOR · TOP-DOWN</Label>
+        <Label>{isCar ? 'OVERHEAD · LIVE' : 'SPECTATOR · TOP-DOWN'}</Label>
       </div>
     </div>
   );
