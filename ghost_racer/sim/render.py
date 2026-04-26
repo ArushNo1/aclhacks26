@@ -51,7 +51,8 @@ def render_first_person(
     forward = FP_FORWARD_FAR_M + (FP_FORWARD_NEAR_M - FP_FORWARD_FAR_M) * v
     # lateral half-width depends on v (perspective trapezoid)
     half_w = FP_LATERAL_FAR_M + (FP_LATERAL_NEAR_M - FP_LATERAL_FAR_M) * v
-    lateral = u * half_w
+    # u=+1 (right of image) -> lateral<0 (right of car, since +y is left of car)
+    lateral = -u * half_w
 
     # apply optional camera pitch jitter (rotates the forward axis around lateral axis)
     pitch = math.radians(dr.camera_pitch_deg)
@@ -79,40 +80,39 @@ def render_first_person(
 
 
 def _classify_ground(track: Track, xw: np.ndarray, yw: np.ndarray, dr: DomainRand) -> np.ndarray:
-    """Vectorized classification of each (xw, yw) pixel into track / line / grass."""
-    H, W = xw.shape
-    flat_x = xw.ravel()
-    flat_y = yw.ravel()
+    """O(1)-per-pixel oval classifier. Each pixel is in one of 4 segments
+    (bottom straight, top straight, right arc, left arc); the segment is
+    selected by sign and range of (x, y) and the lateral distance to the
+    centerline is computed analytically.
+    """
+    L = track.straight_length
+    R = track.centerline_radius
+    W_half = track.track_width / 2.0
+    line_thickness = 0.04
 
-    # Use the track's batched closest-waypoint via broadcasting against waypoints.
-    wp = track.waypoints  # (N, 2)
-    # distances from each query to each waypoint -> too big for huge images; HxW is small (120x160=19200)
-    dx = flat_x[:, None] - wp[None, :, 0]
-    dy = flat_y[:, None] - wp[None, :, 1]
-    d2 = dx * dx + dy * dy
-    nearest = np.argmin(d2, axis=1)
-    p = wp[nearest]
-    nxt = wp[(nearest + 1) % len(wp)]
-    tangent = nxt - p
-    norm = np.linalg.norm(tangent, axis=1, keepdims=True) + 1e-9
-    tangent = tangent / norm
-    normal = np.stack([-tangent[:, 1], tangent[:, 0]], axis=1)
-    rel = np.stack([flat_x - p[:, 0], flat_y - p[:, 1]], axis=1)
-    lateral = np.sum(rel * normal, axis=1)
+    in_straight_x = (xw >= -L / 2.0) & (xw <= L / 2.0)
 
-    on_track = np.abs(lateral) <= track.track_width / 2.0
-    on_centerline = np.abs(lateral) <= 0.04  # 4 cm white dashed line
-    # dashed: alternate using nearest waypoint index
-    dashed_visible = (nearest % 8) < 4
-    on_centerline &= dashed_visible
-    on_edge = (np.abs(np.abs(lateral) - track.track_width / 2.0) < 0.04)
+    # straight regions: distance to nearest centerline (y = ±R)
+    d_straight = np.minimum(np.abs(yw - R), np.abs(yw + R))
 
-    img = np.zeros((H * W, 3), dtype=np.uint8)
+    # arc regions: distance to nearest arc centerline (radius R around (±L/2, 0))
+    use_right_arc = xw > 0
+    cx = np.where(use_right_arc, L / 2.0, -L / 2.0)
+    dist_to_center = np.sqrt((xw - cx) ** 2 + yw ** 2)
+    d_arc = np.abs(dist_to_center - R)
+
+    d = np.where(in_straight_x, d_straight, d_arc)
+
+    on_track = d <= W_half
+    on_edge = np.abs(d - W_half) < line_thickness
+    on_centerline = d < line_thickness
+
+    img = np.empty(xw.shape + (3,), dtype=np.uint8)
     img[:] = dr.grass_color
     img[on_track] = dr.track_color
     img[on_edge] = dr.line_color
     img[on_centerline] = dr.line_color
-    return img.reshape(H, W, 3)
+    return img
 
 
 def _paint_opponent(img: np.ndarray, ego: Car, opp: Car, H: int, W: int) -> None:
@@ -132,7 +132,7 @@ def _paint_opponent(img: np.ndarray, ego: Car, opp: Car, H: int, W: int) -> None
     half_w = FP_LATERAL_FAR_M + (FP_LATERAL_NEAR_M - FP_LATERAL_FAR_M) * v_norm
     if half_w <= 0:
         return
-    u_norm = yc / half_w
+    u_norm = -yc / half_w  # match the lateral flip in render_first_person
     if abs(u_norm) > 1.0:
         return
 
@@ -144,6 +144,146 @@ def _paint_opponent(img: np.ndarray, ego: Car, opp: Car, H: int, W: int) -> None
     u0, u1 = max(0, cu - half), min(W, cu + half)
     v0, v1 = max(0, cv - half), min(H, cv + size)  # opponent extends "down" toward camera
     img[v0:v1, u0:u1] = (220, 60, 60)  # red rectangle
+
+
+# ------------------------------------------------------------------ player 3D
+# Perspective camera mounted on the player's car. Used as a navigation aid in
+# the human window — NOT as a policy observation (the policy keeps its cheap
+# bird's-eye trapezoid). For each pixel we cast a ray from a pinhole camera
+# above the car, intersect with the ground plane (z=0), and classify the
+# resulting world point with the same `_classify_ground` used for the FP obs.
+
+PLAYER_CAM_HEIGHT_M = 0.22       # cam this far above the ground
+PLAYER_CAM_BACK_M = 0.10         # cam behind car center (third-person feel)
+PLAYER_CAM_PITCH_DEG = -10.0     # tilt down slightly
+PLAYER_CAM_FOV_DEG = 80.0
+SKY_COLOR = np.array([135, 180, 220], dtype=np.uint8)
+
+
+def render_player_3d(
+    track: Track,
+    car: Car,
+    opponent: Optional[Car],
+    dr: DomainRand,
+    H: int = 240,
+    W: int = 320,
+) -> np.ndarray:
+    """Perspective first-person render for the human-driven car. Returns
+    HxWx3 uint8."""
+    fov = math.radians(PLAYER_CAM_FOV_DEG)
+    fx = (W / 2.0) / math.tan(fov / 2.0)
+    fy = fx  # square pixels
+    cx_pix = W / 2.0
+    cy_pix = H / 2.0
+
+    # camera position in world
+    cos_t = math.cos(car.heading)
+    sin_t = math.sin(car.heading)
+    cam_x = car.state.x - PLAYER_CAM_BACK_M * cos_t
+    cam_y = car.state.y - PLAYER_CAM_BACK_M * sin_t
+    cam_z = PLAYER_CAM_HEIGHT_M
+
+    pitch = math.radians(PLAYER_CAM_PITCH_DEG)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+
+    # pinhole rays in camera frame: x=right, y=up, z=forward
+    uu, vv = np.meshgrid(np.arange(W, dtype=np.float32),
+                         np.arange(H, dtype=np.float32))
+    rx = (uu - cx_pix) / fx
+    ry = (cy_pix - vv) / fy
+    rz = np.ones_like(rx)
+
+    # apply pitch (rotate around camera-x): y' = y*cos - z*sin, z' = y*sin + z*cos
+    ry_p = ry * cp - rz * sp
+    rz_p = ry * sp + rz * cp
+
+    # camera frame -> world frame. Camera basis in world:
+    #   forward = (cos_t, sin_t, 0)
+    #   right   = (sin_t, -cos_t, 0)
+    #   up      = (0, 0, 1)
+    wrx = rz_p * cos_t + rx * sin_t
+    wry = rz_p * sin_t - rx * cos_t
+    wrz = ry_p
+
+    # ray-ground intersection at z=0: t = -cam_z / wrz, valid only when wrz<0
+    eps = 1e-4
+    safe_wrz = np.where(wrz < -eps, wrz, -eps)
+    t = -cam_z / safe_wrz
+    hit_ground = wrz < -eps
+
+    gx = cam_x + t * wrx
+    gy = cam_y + t * wry
+
+    img = _classify_ground(track, gx, gy, dr)
+
+    # distance fog: blend with sky proportionally to ground distance
+    dist = np.hypot(gx - cam_x, gy - cam_y)
+    fog_max = 12.0
+    fog_t = np.clip(dist / fog_max, 0.0, 1.0)[..., None]
+    img_f = img.astype(np.float32) * (1.0 - fog_t * 0.55) + \
+            SKY_COLOR.astype(np.float32) * (fog_t * 0.55)
+    img = img_f.astype(np.uint8)
+
+    # sky everywhere we missed the ground
+    img[~hit_ground] = SKY_COLOR
+
+    # opponent billboard
+    if opponent is not None:
+        _paint_opponent_3d(img, opponent, cam_x, cam_y, cam_z,
+                           cos_t, sin_t, cp, sp, fx, fy, cx_pix, cy_pix, H, W)
+
+    img = np.clip(img.astype(np.float32) * dr.brightness, 0, 255).astype(np.uint8)
+    return img
+
+
+def _project_world_to_screen(wx: float, wy: float, wz: float,
+                             cam_x: float, cam_y: float, cam_z: float,
+                             cos_t: float, sin_t: float,
+                             cp: float, sp: float,
+                             fx: float, fy: float,
+                             cx_pix: float, cy_pix: float):
+    """World point -> (u, v, depth). Returns None if behind the camera."""
+    dx = wx - cam_x
+    dy = wy - cam_y
+    dz = wz - cam_z
+    # world -> camera (inverse of basis above)
+    c_x = dx * sin_t - dy * cos_t        # right
+    c_z_flat = dx * cos_t + dy * sin_t   # forward (no pitch)
+    c_y_flat = dz                         # up (no pitch)
+    # undo pitch: rotate by -pitch around x
+    c_y = c_y_flat * cp + c_z_flat * sp
+    c_z = -c_y_flat * sp + c_z_flat * cp
+    if c_z <= 0.05:
+        return None
+    u = cx_pix + fx * c_x / c_z
+    v = cy_pix - fy * c_y / c_z
+    return u, v, c_z
+
+
+def _paint_opponent_3d(img, opp: Car, cam_x: float, cam_y: float, cam_z: float,
+                       cos_t: float, sin_t: float, cp: float, sp: float,
+                       fx: float, fy: float, cx_pix: float, cy_pix: float,
+                       H: int, W: int) -> None:
+    """Project the opponent car's bounding box and paint a red rectangle."""
+    car_top = 0.10  # m, rough body height
+    bot = _project_world_to_screen(opp.state.x, opp.state.y, 0.0,
+                                   cam_x, cam_y, cam_z,
+                                   cos_t, sin_t, cp, sp, fx, fy, cx_pix, cy_pix)
+    top = _project_world_to_screen(opp.state.x, opp.state.y, car_top,
+                                   cam_x, cam_y, cam_z,
+                                   cos_t, sin_t, cp, sp, fx, fy, cx_pix, cy_pix)
+    if bot is None or top is None:
+        return
+    ub, vb, depth = bot
+    ut, vt, _ = top
+    # scale half-width by perspective depth (approx)
+    half_w_px = max(2.0, fx * (CAR_WIDTH_M * 0.5) / max(0.05, depth))
+    u0 = int(max(0, min(W - 1, ub - half_w_px)))
+    u1 = int(max(0, min(W, ub + half_w_px)))
+    v0 = int(max(0, min(H - 1, vt)))
+    v1 = int(max(0, min(H, vb)))
+    if u1 > u0 and v1 > v0:
+        img[v0:v1, u0:u1] = (220, 60, 60)
 
 
 # ------------------------------------------------------------------ spectator

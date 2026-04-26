@@ -9,6 +9,7 @@ Payload format on MQTT (JSON):
 """
 import json
 import os
+import re
 import time
 import urllib3
 
@@ -34,24 +35,56 @@ class DeviceClient:
     def __init__(self) -> None:
         self.s = requests.Session()
         self.s.verify = False
+        self.csrf = None
         self._login()
+        # Refresh CSRF after login from the home page (token rotates on auth).
+        try:
+            r = self.s.get(f"{DEVICE_HOST}/", timeout=5)
+            m = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', r.text) \
+                or re.search(r'name="csrf-token"[^>]*content="([^"]+)"', r.text)
+            self.csrf = m.group(1) if m else None
+            if self.csrf:
+                self.s.headers["X-CSRFToken"] = self.csrf
+                print("[cmd] CSRF token loaded for subsequent requests")
+        except Exception as e:
+            print(f"[cmd] post-login CSRF fetch failed: {e}")
 
     def _login(self) -> None:
         if not DEVICE_PASSWORD:
             print("[cmd] DEVICE_PASSWORD not set; assuming session not required")
             return
-        for path, payload in (
-            ("/login", {"password": DEVICE_PASSWORD}),
-            ("/login", f"password={DEVICE_PASSWORD}"),
-        ):
-            try:
-                r = self.s.post(f"{DEVICE_HOST}{path}", data=payload, timeout=5)
-                if r.status_code in (200, 204, 302):
-                    print(f"[cmd] login ok via {path}")
-                    return
-            except Exception as e:
-                print(f"[cmd] login attempt {path} failed: {e}")
-        print("[cmd] WARNING: login did not return success; will try drives anyway")
+        # Step 1: GET /login to get CSRF token + session cookie.
+        try:
+            r = self.s.get(f"{DEVICE_HOST}/login", timeout=5)
+        except Exception as e:
+            print(f"[cmd] GET /login failed: {e}")
+            return
+        m = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', r.text)
+        token = m.group(1) if m else None
+        if not token:
+            # Some firmwares put it in a meta tag.
+            m = re.search(r'name="csrf-token"[^>]*content="([^"]+)"', r.text)
+            token = m.group(1) if m else None
+        if not token:
+            print("[cmd] WARNING: no CSRF token found on /login; trying without")
+        # Step 2: POST credentials.
+        data = {"password": DEVICE_PASSWORD}
+        if token:
+            data["csrf_token"] = token
+        try:
+            r = self.s.post(
+                f"{DEVICE_HOST}/login",
+                data=data,
+                headers={"X-CSRFToken": token} if token else {},
+                timeout=5,
+                allow_redirects=True,
+            )
+            if r.status_code in (200, 204, 302):
+                print(f"[cmd] login ok ({r.status_code})")
+            else:
+                print(f"[cmd] login returned {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"[cmd] POST /login failed: {e}")
 
     def set_manual_mode(self) -> None:
         for path, payload in (
