@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Label, Dot, Divider,
   LossChart,
@@ -34,7 +34,12 @@ export function ActClone({ car1Name, car2Name }: { car1Name: string; car2Name: s
   }, [points]);
   const currentVal = valPoints.length ? valPoints[Math.max(0, Math.min(currentEpoch, valPoints.length - 1))] : 0;
 
+  const [extraEpochs, setExtraEpochs] = useState(8);
+  const stepEpochs = (delta: number) =>
+    setExtraEpochs(n => Math.max(1, Math.min(500, n + delta)));
+
   const onStart = () => api.trainStart(8).catch(console.error);
+  const onAddEpochs = () => api.trainStart(extraEpochs).catch(console.error);
   const onReload = () => api.reloadPolicy().catch(console.error);
 
   return (
@@ -101,6 +106,13 @@ export function ActClone({ car1Name, car2Name }: { car1Name: string; car2Name: s
             </div>
           ))}
         </div>
+        <AddEpochsBar
+          count={extraEpochs}
+          onDec={() => stepEpochs(-1)}
+          onInc={() => stepEpochs(1)}
+          onAdd={onAddEpochs}
+          disabled={running}
+        />
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -167,6 +179,78 @@ export function ActClone({ car1Name, car2Name }: { car1Name: string; car2Name: s
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── AddEpochsBar ────────────────────────────────────────────────────────────
+// Stepper + action button for queueing additional training epochs after the
+// initial run completes. Disabled while training is already in progress.
+
+function AddEpochsBar({
+  count, onDec, onInc, onAdd, disabled,
+}: {
+  count: number;
+  onDec: () => void;
+  onInc: () => void;
+  onAdd: () => void;
+  disabled: boolean;
+}) {
+  const dim = disabled ? 0.35 : 1;
+  return (
+    <div style={card({
+      padding: '8px 12px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 12,
+      opacity: dim,
+    })}>
+      <Label style={{ color: 'rgba(255,255,255,0.5)' }}>ADD EPOCHS</Label>
+      <div style={{ flex: 1 }} />
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        border: `1px solid ${BORDER}`,
+        borderRadius: 4,
+        overflow: 'hidden',
+      }}>
+        <StepBtn onClick={onDec} disabled={disabled}>−</StepBtn>
+        <span style={{
+          minWidth: 44,
+          textAlign: 'center' as const,
+          padding: '4px 8px',
+          fontFamily: "var(--font-jetbrains-mono), monospace",
+          fontSize: 12,
+          color: CV,
+        }}>{count}</span>
+        <StepBtn onClick={onInc} disabled={disabled}>+</StepBtn>
+      </div>
+      <ActButton onClick={onAdd} color={CV} kind="solid">
+        + RUN {count}
+      </ActButton>
+    </div>
+  );
+}
+
+function StepBtn({
+  onClick, disabled, children,
+}: { onClick: () => void; disabled: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        color: disabled ? 'rgba(255,255,255,0.25)' : CV,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        padding: '4px 10px',
+        fontFamily: "var(--font-orbitron), sans-serif",
+        fontSize: 14,
+        fontWeight: 700,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 

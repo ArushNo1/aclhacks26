@@ -1,7 +1,19 @@
 'use client';
 
-import React, { useEffect, useRef, useState, CSSProperties } from 'react';
+import React, { useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
 import Link from 'next/link';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  Line,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ReferenceDot,
+  ComposedChart,
+} from 'recharts';
 import { C1, C2, CV, BG, SURFACE, SURFACE2, BORDER, BORDER2 } from './tokens';
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
@@ -557,6 +569,50 @@ export function TrackMap({ car1T, car2T }: { car1T: number; car2T: number }) {
 
 // ─── LossChart ────────────────────────────────────────────────────────────────
 
+const VAL_COLOR = '#f97316';
+
+/**
+ * "Nice" axis bounds: snap the data range to a round step (1/2/2.5/5 × 10ⁿ),
+ * pad both ends, and clamp to ≥0 since loss is non-negative.
+ */
+function niceLossDomain(values: number[]): [number, number] {
+  if (values.length === 0) return [0, 0.5];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [0, 0.5];
+  if (hi === lo) {
+    const pad = Math.max(0.01, Math.abs(hi) * 0.2);
+    return [Math.max(0, lo - pad), hi + pad];
+  }
+  const span = hi - lo;
+  const pad = span * 0.15;
+  const rawLo = Math.max(0, lo - pad);
+  const rawHi = hi + pad;
+  // Snap rawHi up to a "nice" multiple of step.
+  const niceStep = (range: number) => {
+    const exp = Math.floor(Math.log10(range));
+    const f = range / Math.pow(10, exp);
+    const nf = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
+    return nf * Math.pow(10, exp);
+  };
+  const step = niceStep((rawHi - rawLo) / 4);
+  const niceHi = Math.ceil(rawHi / step) * step;
+  const niceLo = Math.max(0, Math.floor(rawLo / step) * step);
+  return [niceLo, niceHi];
+}
+
+const fmtLoss = (v: number) => {
+  if (v === 0) return '0';
+  if (Math.abs(v) >= 1) return v.toFixed(2);
+  if (Math.abs(v) >= 0.01) return v.toFixed(3);
+  return v.toExponential(1);
+};
+
 export function LossChart({
   points,
   progress,
@@ -570,141 +626,144 @@ export function LossChart({
   valPoints?: number[];
   /** Primary line color. Defaults to CV. */
   color?: string;
-  /** Canvas display height in px. */
+  /** Display height in px. */
   height?: number;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const lineColor = color ?? CV;
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const W = canvas.width;
-    const H = canvas.height;
-    const visible = Math.max(2, Math.floor(progress * points.length));
-    const visiblePts = points.slice(0, visible);
-    const visibleVal = valPoints ? valPoints.slice(0, visible) : null;
-
-    ctx.clearRect(0, 0, W, H);
-
-    const padL = 40;
-    const padB = 28;
-    const padT = 12;
-    const padR = 12;
-    const chartW = W - padL - padR;
-    const chartH = H - padT - padB;
-
-    const maxY = Math.max(
-      ...visiblePts,
-      ...(visibleVal ?? []),
-      0.5,
-    );
-    const minY = 0;
-
-    const toX = (i: number) => padL + (i / (points.length - 1)) * chartW;
-    const toY = (v: number) => padT + chartH - ((v - minY) / (maxY - minY)) * chartH;
-
-    // Grid lines
-    for (let i = 0; i <= 5; i++) {
-      const y = padT + (i / 5) * chartH;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(padL + chartW, y);
-      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      const val = maxY - (i / 5) * (maxY - minY);
-      ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      ctx.font = `10px var(--font-jetbrains-mono, monospace)`;
-      ctx.textAlign = 'right';
-      ctx.fillText(val.toFixed(2), padL - 5, y + 4);
+  const data = useMemo(() => {
+    const visible = Math.max(0, Math.floor(progress * points.length));
+    const out: { epoch: number; train: number; val?: number }[] = [];
+    for (let i = 0; i < visible; i++) {
+      out.push({
+        epoch: i + 1,
+        train: points[i],
+        val: valPoints?.[i],
+      });
     }
+    return out;
+  }, [points, progress, valPoints]);
 
-    // Axis lines
-    ctx.beginPath();
-    ctx.moveTo(padL, padT);
-    ctx.lineTo(padL, padT + chartH);
-    ctx.lineTo(padL + chartW, padT + chartH);
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    // EPOCHS label
-    ctx.fillStyle = 'rgba(255,255,255,0.2)';
-    ctx.font = `9px var(--font-jetbrains-mono, monospace)`;
-    ctx.textAlign = 'center';
-    ctx.fillText('EPOCHS →', padL + chartW / 2, H - 4);
-
-    if (visiblePts.length < 2) return;
-
-    // Gradient fill
-    const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH);
-    grad.addColorStop(0, lineColor + '60');
-    grad.addColorStop(1, lineColor + '00');
-
-    ctx.beginPath();
-    ctx.moveTo(toX(0), toY(visiblePts[0]));
-    for (let i = 1; i < visiblePts.length; i++) {
-      ctx.lineTo(toX(i), toY(visiblePts[i]));
+  const yDomain = useMemo<[number, number]>(() => {
+    const all: number[] = [];
+    for (const d of data) {
+      if (Number.isFinite(d.train)) all.push(d.train);
+      if (d.val !== undefined && Number.isFinite(d.val)) all.push(d.val);
     }
-    ctx.lineTo(toX(visiblePts.length - 1), padT + chartH);
-    ctx.lineTo(toX(0), padT + chartH);
-    ctx.closePath();
-    ctx.fillStyle = grad;
-    ctx.fill();
+    return niceLossDomain(all);
+  }, [data]);
 
-    // Validation line (dashed, drawn beneath the main glow line)
-    if (visibleVal && visibleVal.length >= 2) {
-      ctx.save();
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(toX(0), toY(visibleVal[0]));
-      for (let i = 1; i < visibleVal.length; i++) {
-        ctx.lineTo(toX(i), toY(visibleVal[i]));
-      }
-      ctx.strokeStyle = '#f97316';
-      ctx.lineWidth = 1.5;
-      ctx.shadowColor = '#f97316';
-      ctx.shadowBlur = 6;
-      ctx.stroke();
-      ctx.restore();
-    }
+  const xDomain = useMemo<[number, number]>(
+    () => [1, Math.max(2, points.length)],
+    [points.length],
+  );
 
-    // Glowing line
-    ctx.beginPath();
-    ctx.moveTo(toX(0), toY(visiblePts[0]));
-    for (let i = 1; i < visiblePts.length; i++) {
-      ctx.lineTo(toX(i), toY(visiblePts[i]));
-    }
-    ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 2;
-    ctx.shadowColor = lineColor;
-    ctx.shadowBlur = 8;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // Cursor dot
-    const lastX = toX(visiblePts.length - 1);
-    const lastY = toY(visiblePts[visiblePts.length - 1]);
-    ctx.beginPath();
-    ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
-    ctx.fillStyle = lineColor;
-    ctx.shadowColor = lineColor;
-    ctx.shadowBlur = 12;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-  }, [points, progress, valPoints, lineColor]);
+  const last = data[data.length - 1];
+  const gradId = `lossFill-${lineColor.replace('#', '')}`;
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={520}
-      height={height * 1}
-      style={{ width: '100%', height, display: 'block' }}
-    />
+    <div style={{ width: '100%', height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 8, right: 14, bottom: 18, left: 4 }}>
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={lineColor} stopOpacity={0.45} />
+              <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+          <XAxis
+            type="number"
+            dataKey="epoch"
+            domain={xDomain}
+            allowDecimals={false}
+            tick={{
+              fill: 'rgba(255,255,255,0.4)',
+              fontSize: 10,
+              fontFamily: "var(--font-jetbrains-mono, monospace)",
+            }}
+            tickLine={{ stroke: 'rgba(255,255,255,0.15)' }}
+            axisLine={{ stroke: 'rgba(255,255,255,0.15)' }}
+            label={{
+              value: 'EPOCHS →',
+              position: 'insideBottom',
+              offset: -8,
+              style: {
+                fill: 'rgba(255,255,255,0.25)',
+                fontSize: 9,
+                letterSpacing: '0.15em',
+                fontFamily: "var(--font-jetbrains-mono, monospace)",
+              },
+            }}
+          />
+          <YAxis
+            domain={yDomain}
+            width={48}
+            tickCount={6}
+            tickFormatter={fmtLoss}
+            tick={{
+              fill: 'rgba(255,255,255,0.4)',
+              fontSize: 10,
+              fontFamily: "var(--font-jetbrains-mono, monospace)",
+            }}
+            tickLine={{ stroke: 'rgba(255,255,255,0.15)' }}
+            axisLine={{ stroke: 'rgba(255,255,255,0.15)' }}
+          />
+          <Tooltip
+            cursor={{ stroke: 'rgba(255,255,255,0.2)', strokeDasharray: '3 3' }}
+            contentStyle={{
+              background: 'rgba(8,12,18,0.95)',
+              border: `1px solid ${BORDER}`,
+              borderRadius: 4,
+              fontFamily: "var(--font-jetbrains-mono, monospace)",
+              fontSize: 11,
+            }}
+            labelStyle={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.1em' }}
+            itemStyle={{ padding: 0 }}
+            labelFormatter={(v) => `EPOCH ${v}`}
+            formatter={(value, name) => [
+              typeof value === 'number' ? fmtLoss(value) : String(value),
+              String(name).toUpperCase(),
+            ]}
+          />
+          <Area
+            type="monotone"
+            dataKey="train"
+            name="train"
+            stroke={lineColor}
+            strokeWidth={2}
+            fill={`url(#${gradId})`}
+            isAnimationActive={false}
+            dot={false}
+            activeDot={{ r: 3, fill: lineColor, stroke: 'none' }}
+            style={{ filter: `drop-shadow(0 0 4px ${lineColor}aa)` }}
+          />
+          {valPoints && (
+            <Line
+              type="monotone"
+              dataKey="val"
+              name="val"
+              stroke={VAL_COLOR}
+              strokeWidth={1.6}
+              strokeDasharray="4 4"
+              isAnimationActive={false}
+              dot={false}
+              activeDot={{ r: 3, fill: VAL_COLOR, stroke: 'none' }}
+              style={{ filter: `drop-shadow(0 0 3px ${VAL_COLOR}aa)` }}
+            />
+          )}
+          {last && (
+            <ReferenceDot
+              x={last.epoch}
+              y={last.train}
+              r={4}
+              fill={lineColor}
+              stroke="none"
+            />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

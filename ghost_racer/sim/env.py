@@ -36,6 +36,7 @@ class GhostRacerEnv(gym.Env):
         obs_width: int = 160,
         dt: float = 0.05,
         max_episode_steps: int = 1500,
+        randomize_start: bool = True,
     ):
         super().__init__()
         self.track = Track()
@@ -43,6 +44,7 @@ class GhostRacerEnv(gym.Env):
         self.obs_h = obs_height
         self.obs_w = obs_width
         self.max_episode_steps = max_episode_steps
+        self.randomize_start = randomize_start
 
         self.dr = DomainRand(enabled=domain_rand)
         self.opponent_policy = opponent_policy
@@ -62,28 +64,69 @@ class GhostRacerEnv(gym.Env):
         self._last_xy_opp: Tuple[float, float] = (0.0, 0.0)
         self.lap_ego = 0
         self.lap_opp = 0
+        self._stuck_steps = 0
+        self._np_random = np.random.default_rng()
 
     # ------------------------------------------------------------------ API
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        self.dr.rng = np.random.default_rng(seed)
+        if seed is not None:
+            self._np_random = np.random.default_rng(seed)
+        self.dr.rng = self._np_random
         self.dr.resample()
 
-        # Stagger: ego (learner) starts behind so overtaking is the natural objective
-        ex, ey, eth = self.track.start_pose(slot=1)
-        ox, oy, oth = self.track.start_pose(slot=0)
+        if self.randomize_start:
+            ex, ey, eth = self._random_pose(lateral_jitter=0.25)
+            # opponent ~1m ahead along the track so ego is the chaser
+            ox, oy, oth = self._pose_offset(ex, ey, eth, forward_m=1.0)
+        else:
+            # Stagger: ego (learner) starts behind so overtaking is the natural objective
+            ex, ey, eth = self.track.start_pose(slot=1)
+            ox, oy, oth = self.track.start_pose(slot=0)
         self.ego.reset(ex, ey, eth)
         self.opp.reset(ox, oy, oth)
 
         self.steps = 0
         self.lap_ego = 0
         self.lap_opp = 0
+        self._stuck_steps = 0
         self._prev_progress_ego = self.track.progress_normalized(*self.ego.position)
         self._prev_progress_opp = self.track.progress_normalized(*self.opp.position)
         self._last_xy_ego = self.ego.position
         self._last_xy_opp = self.opp.position
 
         return self._obs(self.ego, self.opp), {}
+
+    def _random_pose(self, lateral_jitter: float = 0.0) -> Tuple[float, float, float]:
+        """Pick a random waypoint on the centerline, return pose pointing along
+        the track tangent. Optional lateral jitter shifts the car off the
+        centerline so the agent sees recovery situations."""
+        wp = self.track.waypoints
+        idx = int(self._np_random.integers(0, len(wp)))
+        nxt = (idx + 1) % len(wp)
+        p = wp[idx]
+        q = wp[nxt]
+        tangent = q - p
+        tnorm = float(np.linalg.norm(tangent)) + 1e-9
+        tx, ty = float(tangent[0] / tnorm), float(tangent[1] / tnorm)
+        theta = float(np.arctan2(ty, tx))
+        if lateral_jitter > 0.0:
+            half = self.track.track_width / 2.0 - 0.05
+            jitter = float(self._np_random.uniform(-min(lateral_jitter, half),
+                                                    min(lateral_jitter, half)))
+            # left-hand normal
+            nx, ny = -ty, tx
+            x = float(p[0]) + jitter * nx
+            y = float(p[1]) + jitter * ny
+        else:
+            x, y = float(p[0]), float(p[1])
+        return x, y, theta
+
+    @staticmethod
+    def _pose_offset(x: float, y: float, theta: float, forward_m: float
+                     ) -> Tuple[float, float, float]:
+        import math
+        return x + forward_m * math.cos(theta), y + forward_m * math.sin(theta), theta
 
     def step(self, action, opp_action=None):
         """If `opp_action` is supplied (e.g. play.py passing the human's hand
@@ -108,31 +151,45 @@ class GhostRacerEnv(gym.Env):
         ego_hit = self._enforce_walls(self.ego)
         opp_hit = self._enforce_walls(self.opp)
 
-        # progress and lap detection
+        # progress and lap detection. Use lap-aware totals so wrap-around at
+        # the finish line doesn't produce a giant negative delta.
         prog_ego = self._lap_progress(self.ego, self._last_xy_ego, self._prev_progress_ego, "ego")
         prog_opp = self._lap_progress(self.opp, self._last_xy_opp, self._prev_progress_opp, "opp")
-        d_ego = prog_ego - (self._prev_progress_ego + self.lap_ego)
-        d_opp = prog_opp - (self._prev_progress_opp + self.lap_opp)
-        # use raw delta-progress in [0, 1) units of lap; convert to meters
-        d_ego_m = d_ego * self.track.total_length
-        d_opp_m = d_opp * self.track.total_length
-
-        # reward shaping
-        # is_on_track is always True now (we clamp), so we score wall *contact*
-        off_track_ego = ego_hit
-        collision = cars_collide(self.ego, self.opp)
-
-        reward = 0.0
-        reward += 1.0 * d_ego_m                            # progress
-        reward += 0.5 * (d_ego_m - d_opp_m)                # closing the gap
-        reward -= 0.3 if ego_hit else 0.0                  # wall-contact penalty
-        reward -= 1.0 if collision else 0.0                # don't bump
-
-        # overtake bonus: ego's cumulative lap-progress passes opp's
         ego_total = self.lap_ego + prog_ego
         opp_total = self.lap_opp + prog_opp
         prev_ego_total = self.lap_ego + self._prev_progress_ego
         prev_opp_total = self.lap_opp + self._prev_progress_opp
+        # the lap counter just ticked above, so "prev" needs to subtract the
+        # lap that was added by _lap_progress for ego/opp respectively
+        if prog_ego < self._prev_progress_ego and ego_total > prev_ego_total:
+            prev_ego_total -= 1  # finish-line crossing this step
+        if prog_opp < self._prev_progress_opp and opp_total > prev_opp_total:
+            prev_opp_total -= 1
+        d_ego_m = (ego_total - prev_ego_total) * self.track.total_length
+        d_opp_m = (opp_total - prev_opp_total) * self.track.total_length
+
+        # reward shaping
+        off_track_ego = ego_hit
+        collision = cars_collide(self.ego, self.opp)
+
+        # track "stuck" — barely making forward progress for many steps in a row.
+        # Wall bouncing alternates hit/no-hit each step, so we key off progress
+        # rather than continuous contact.
+        if d_ego_m < 0.005:
+            self._stuck_steps += 1
+        elif d_ego_m > 0.02:
+            self._stuck_steps = 0
+        # else: in-between progress doesn't reset, but doesn't increment either
+
+        reward = 0.0
+        reward += 2.0 * d_ego_m                            # progress
+        reward += 0.5 * (d_ego_m - d_opp_m)                # closing the gap
+        reward -= 0.5 if ego_hit else 0.0                  # wall-contact penalty
+        # escalating penalty as the car remains stuck (capped to keep returns sane)
+        reward -= 0.05 * min(self._stuck_steps, 40)
+        reward -= 1.0 if collision else 0.0                # don't bump
+
+        # overtake bonus: ego's cumulative lap-progress passes opp's
         if (prev_ego_total < prev_opp_total) and (ego_total >= opp_total):
             reward += 5.0  # passed!
 
@@ -142,7 +199,10 @@ class GhostRacerEnv(gym.Env):
         self._last_xy_opp = self.opp.position
 
         self.steps += 1
-        terminated = collision and self.steps > 5
+        # end the episode early if we've been wedged against a wall — gives PPO
+        # a clean negative-return signal instead of hundreds of "stuck" frames
+        stuck_out = self._stuck_steps >= 60
+        terminated = (collision and self.steps > 5) or stuck_out
         truncated = self.steps >= self.max_episode_steps
 
         info = {
@@ -152,6 +212,7 @@ class GhostRacerEnv(gym.Env):
             "collision": collision,
             "ego_progress": ego_total,
             "opp_progress": opp_total,
+            "stuck_steps": self._stuck_steps,
         }
         obs = self._obs(self.ego, self.opp)
         return obs, float(reward), terminated, truncated, info
