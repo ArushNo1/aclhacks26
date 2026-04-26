@@ -238,7 +238,7 @@ def main():
     # --- pygame ---
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
-    pygame.display.set_caption("Ghost Racer - hand vs clone")
+    pygame.display.set_caption("67 RACER - hand vs clone")
     font = pygame.font.SysFont("monospace", 18)
     small_font = pygame.font.SysFont("monospace", 14)
     clock = pygame.time.Clock()

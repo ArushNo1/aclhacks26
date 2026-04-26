@@ -1,4 +1,4 @@
-"""HTTP / WebSocket / MJPEG server for the Ghost Racer dashboard.
+"""HTTP / WebSocket / MJPEG server for the 67 RACER dashboard.
 
 Exposes the live sim state (telemetry, frames, race control, training,
 capture, MQTT pass-through) over uvicorn so the Next.js frontend at

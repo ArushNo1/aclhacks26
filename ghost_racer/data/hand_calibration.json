@@ -1,9 +1,9 @@
 {
-  "left_neutral_size": 0.22619884312152863,
-  "left_forward_size": 0.37813169360160825,
-  "left_backward_size": 0.130119252204895,
-  "right_neutral_size": 0.22157966196537018,
-  "right_forward_size": 0.3429039061069489,
-  "right_backward_size": 0.130156010389328,
+  "left_neutral_size": 0.44259934569453147,
+  "left_forward_size": 0.6860093171634372,
+  "left_backward_size": 0.09591374201175971,
+  "right_neutral_size": 0.4783701979236686,
+  "right_forward_size": 0.7151535138606079,
+  "right_backward_size": 0.22477747790225144,
   "steer_exponent": 3.0
 }

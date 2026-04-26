@@ -9,13 +9,16 @@ interface Tweaks {
   car2Name: string;
 }
 
+export type PovSource = 'sim' | 'car';
+
 export default function Dashboard() {
   const [act, setAct] = useState(1);
   const [tweaks, setTweaks] = useState<Tweaks>({ car1Name: 'HUMAN_A', car2Name: 'HUMAN_B' });
   const [debugOpen, setDebugOpen] = useState(false);
+  const [povSource, setPovSource] = useState<PovSource>('sim');
 
   const views: Record<number, React.ReactNode> = {
-    1: <ActCapture />,
+    1: <ActCapture povSource={povSource} />,
     2: <ActClone car1Name={tweaks.car1Name} car2Name={tweaks.car2Name} />,
     3: <ActRace car1Name={tweaks.car1Name} car2Name={tweaks.car2Name} />,
   };
@@ -70,6 +73,7 @@ export default function Dashboard() {
                 letterSpacing: '0.15em',
                 color: 'rgba(255,255,255,0.6)',
               }}>DEBUG · TWEAKS</span>
+              <PovSourceToggle value={povSource} onChange={setPovSource} />
               <div style={{ display: 'flex', gap: 12, flex: 1 }}>
                 {(['car1Name', 'car2Name'] as const).map(key => (
                   <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -144,5 +148,56 @@ export default function Dashboard() {
         ⚙
       </button>
     </>
+  );
+}
+
+function PovSourceToggle({
+  value,
+  onChange,
+}: {
+  value: PovSource;
+  onChange: (v: PovSource) => void;
+}) {
+  const opts: PovSource[] = ['sim', 'car'];
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{
+        fontFamily: "var(--font-jetbrains-mono), monospace",
+        fontSize: 9,
+        letterSpacing: '0.15em',
+        textTransform: 'uppercase' as const,
+        color: 'rgba(255,255,255,0.3)',
+      }}>POV</span>
+      <div style={{
+        display: 'flex',
+        background: 'rgba(255,255,255,0.05)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: 3,
+        padding: 2,
+      }}>
+        {opts.map(o => {
+          const active = value === o;
+          return (
+            <button
+              key={o}
+              onClick={() => onChange(o)}
+              style={{
+                fontFamily: "var(--font-orbitron), 'Orbitron', sans-serif",
+                fontSize: 10,
+                letterSpacing: '0.1em',
+                padding: '4px 10px',
+                borderRadius: 2,
+                border: 'none',
+                cursor: 'pointer',
+                background: active ? 'rgba(255,255,255,0.12)' : 'transparent',
+                color: active ? '#fff' : 'rgba(255,255,255,0.4)',
+              }}
+            >
+              {o === 'sim' ? 'SIM' : 'CAR'}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

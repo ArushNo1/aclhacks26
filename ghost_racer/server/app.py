@@ -1,4 +1,4 @@
-"""FastAPI app exposing the Ghost Racer sim to the Next.js dashboard.
+"""FastAPI app exposing the 67 RACER sim to the Next.js dashboard.
 
 Run:
     uvicorn ghost_racer.server.app:app --port 8000 --reload
@@ -20,6 +20,7 @@ Endpoints:
   GET  /stream/spectator.mjpg       multipart/x-mixed-replace top-down view
   GET  /stream/player.mjpg          240x320 player 3D view
   GET  /stream/ai.mjpg              120x160 policy obs (the AI's eyes)
+  GET  /stream/overhead.mjpg        live overhead camera (DeepLens via SSH+ffmpeg)
 """
 from __future__ import annotations
 
@@ -63,14 +64,20 @@ async def lifespan(app: FastAPI):
         print(f"[server] mqtt bridge disabled: {e}")
         app.state.mqtt_bridge = None
 
+    from .overhead import OverheadBridge
+    overhead = OverheadBridge()
+    await overhead.start()
+    app.state.overhead = overhead
+
     yield
 
     if app.state.mqtt_bridge is not None:
         await app.state.mqtt_bridge.stop()
+    await app.state.overhead.stop()
     await _runner.stop()
 
 
-app = FastAPI(lifespan=lifespan, title="Ghost Racer Server")
+app = FastAPI(lifespan=lifespan, title="67 RACER Server")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -194,6 +201,23 @@ async def health() -> Dict[str, Any]:
             "CLIENTS": str(bridge.client_count()) if bridge is not None else "0",
         },
     })
+    if bridge is not None:
+        for car in bridge.cars():
+            age = car["frame_age_s"]
+            age_str = "—" if age is None or age == float("inf") else (
+                f"{age:.1f}s" if age < 60 else f"{age / 60:.1f}m"
+            )
+            rows.append({
+                "name": f"Car {car['id']}",
+                "sub": "frame · cmd" if car["online"] else "no frames",
+                "metrics": {
+                    "STATUS": "ONLINE" if car["online"] else "OFFLINE",
+                    "FPS": f"{car['fps']:.1f}",
+                    "CMD/S": f"{car['cmd_rate']:.1f}",
+                    "LAST": age_str,
+                    "JPG": f"{car['last_frame_kb']:.0f}kB",
+                },
+            })
     return {"devices": rows}
 
 
@@ -385,6 +409,83 @@ async def player_mjpg() -> StreamingResponse:
 async def ai_mjpg() -> StreamingResponse:
     runner = _runner_obj()
     return _mjpeg_response(lambda: runner.last_ai_view)
+
+
+@app.get("/stream/overhead.mjpg")
+async def overhead_mjpg() -> StreamingResponse:
+    """Stream the overhead DeepLens camera. A single shared producer
+    (ssh → ffmpeg → JPEGs) feeds every viewer."""
+    overhead = app.state.overhead
+    boundary = BOUNDARY
+
+    async def gen():
+        period = 1.0 / 20.0
+        last_v = -1
+        while True:
+            jpg = overhead.last_jpeg()
+            v = overhead.version()
+            if jpg is None or v == last_v:
+                await asyncio.sleep(period)
+                continue
+            last_v = v
+            chunk = (
+                f"--{boundary}\r\n"
+                f"Content-Type: image/jpeg\r\n"
+                f"Content-Length: {len(jpg)}\r\n\r\n"
+            ).encode("ascii") + jpg + b"\r\n"
+            yield chunk
+            await asyncio.sleep(period)
+
+    return StreamingResponse(
+        gen(),
+        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+        headers={
+            "Cache-Control": "no-cache, private",
+            "Pragma": "no-cache",
+            "Connection": "close",
+        },
+    )
+
+
+@app.get("/stream/car/{car_id}.mjpg")
+async def car_mjpg(car_id: str) -> StreamingResponse:
+    """Stream the latest JPEG received over MQTT on car/{id}/frame.
+
+    Frames arrive pre-encoded from the on-car bridge, so we just re-emit
+    the bytes directly — no decode/encode round-trip.
+    """
+    bridge = app.state.mqtt_bridge
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="MQTT bridge disabled")
+
+    boundary = BOUNDARY
+
+    async def gen():
+        period = 1.0 / 20.0
+        last_id: int = 0
+        while True:
+            jpg = bridge.last_jpeg(car_id)
+            if jpg is None or id(jpg) == last_id:
+                await asyncio.sleep(period)
+                continue
+            last_id = id(jpg)
+            chunk = (
+                f"--{boundary}\r\n"
+                f"Content-Type: image/jpeg\r\n"
+                f"Content-Length: {len(jpg)}\r\n\r\n"
+            ).encode("ascii") + jpg + b"\r\n"
+            yield chunk
+            await asyncio.sleep(period)
+
+    return StreamingResponse(
+        gen(),
+        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+        headers={
+            "Cache-Control": "no-cache, private",
+            "Pragma": "no-cache",
+            "Connection": "close",
+        },
+    )
 
 
 # ----------------------------------------------- hand calibration (Act 1)

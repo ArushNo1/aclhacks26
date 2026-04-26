@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
-from typing import Any, Dict, Optional, Set
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 try:
     import paho.mqtt.client as mqtt
@@ -28,6 +30,10 @@ PORT = int(os.environ.get("MQTT_PORT", "1883"))
 SUBSCRIBE_TOPICS = ["car/+/+", "race/+", "device/+/+", "leap/+", "trainer/+"]
 MAX_PAYLOAD_PREVIEW = 160  # chars; binary topics are summarized to size
 
+CAR_TOPIC_RE = re.compile(r"^car/([^/]+)/(frame|cmd)$")
+FRAME_WINDOW_S = 5.0       # rolling window for FPS / cmd-rate
+ONLINE_THRESHOLD_S = 2.0   # last frame age above this → OFFLINE
+
 
 class MqttBridge:
     def __init__(self) -> None:
@@ -41,6 +47,9 @@ class MqttBridge:
         self._connected = False
         self._msg_count = 0
         self._msg_window_start = time.time()
+        # Per-car telemetry: keyed by car id (string).
+        # Each entry: {frame_ts, cmd_ts, frame_bytes, frame_times: deque, cmd_times: deque, last_jpeg: bytes}
+        self._cars: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -81,6 +90,43 @@ class MqttBridge:
     def broker_url(self) -> str:
         return f"{BROKER}:{PORT}"
 
+    def last_jpeg(self, car_id: str) -> Optional[bytes]:
+        """Latest JPEG payload received on car/{id}/frame, or None."""
+        car = self._cars.get(car_id)
+        if car is None:
+            return None
+        jpg = car.get("last_jpeg")
+        return jpg if jpg else None
+
+    def cars(self) -> List[Dict[str, Any]]:
+        """Snapshot of per-car connection state, sorted by id."""
+        now = time.time()
+        out: List[Dict[str, Any]] = []
+        for cid in sorted(self._cars.keys()):
+            c = self._cars[cid]
+            frame_ts: float = c["frame_ts"]
+            cmd_ts: float = c["cmd_ts"]
+            frame_times: Deque[float] = c["frame_times"]
+            cmd_times: Deque[float] = c["cmd_times"]
+            # Trim windows
+            cutoff = now - FRAME_WINDOW_S
+            while frame_times and frame_times[0] < cutoff:
+                frame_times.popleft()
+            while cmd_times and cmd_times[0] < cutoff:
+                cmd_times.popleft()
+            frame_age = (now - frame_ts) if frame_ts > 0 else float("inf")
+            online = frame_age < ONLINE_THRESHOLD_S
+            out.append({
+                "id": cid,
+                "online": online,
+                "frame_age_s": frame_age if frame_ts > 0 else None,
+                "cmd_age_s": (now - cmd_ts) if cmd_ts > 0 else None,
+                "fps": len(frame_times) / FRAME_WINDOW_S,
+                "cmd_rate": len(cmd_times) / FRAME_WINDOW_S,
+                "last_frame_kb": c["frame_bytes"] / 1024.0,
+            })
+        return out
+
     # ----------------------------------------------------------- internals
     def _on_connect(self, client, userdata, flags, rc, *args, **kwargs) -> None:
         if rc == 0:
@@ -92,6 +138,27 @@ class MqttBridge:
         # Summarize binary / large payloads
         topic = msg.topic
         payload = msg.payload
+        now = time.time()
+        # Track per-car activity for /api/health
+        m = CAR_TOPIC_RE.match(topic)
+        if m:
+            cid, kind = m.group(1), m.group(2)
+            car = self._cars.setdefault(cid, {
+                "frame_ts": 0.0,
+                "cmd_ts": 0.0,
+                "frame_bytes": 0,
+                "frame_times": deque(),
+                "cmd_times": deque(),
+                "last_jpeg": b"",
+            })
+            if kind == "frame":
+                car["frame_ts"] = now
+                car["frame_bytes"] = len(payload)
+                car["frame_times"].append(now)
+                car["last_jpeg"] = bytes(payload)
+            elif kind == "cmd":
+                car["cmd_ts"] = now
+                car["cmd_times"].append(now)
         is_binary = topic.endswith("/frame") or len(payload) > MAX_PAYLOAD_PREVIEW
         if is_binary:
             preview = f"{len(payload) / 1024.0:.1f} kB · binary"
@@ -101,7 +168,7 @@ class MqttBridge:
             except Exception:
                 preview = repr(payload)[:MAX_PAYLOAD_PREVIEW]
         record = {
-            "ts": time.time(),
+            "ts": now,
             "topic": topic,
             "payload": preview,
             "size": len(payload),

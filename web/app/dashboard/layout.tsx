@@ -21,8 +21,8 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "Mission Control — Ghost Racer",
-  description: "Ghost Racer Mission Control Dashboard",
+  title: "Mission Control — 67 RACER",
+  description: "67 RACER Mission Control Dashboard",
 };
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

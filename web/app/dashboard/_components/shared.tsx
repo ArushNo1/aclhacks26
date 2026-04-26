@@ -892,7 +892,7 @@ export function TopBar({ act, onActChange }: { act: number; onActChange: (n: num
           backgroundClip: 'text',
           letterSpacing: '0.08em',
         }}>
-          GHOST RACER
+          67 RACER
         </span>
       </div>
 
