@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { CameraIcon, HandIcon } from "./icons";
+import { useStream } from "../lib/useStream";
 
-const RACE_STATES = ["IDLE", "TRAINING", "LIVE"] as const;
-type RaceState = (typeof RACE_STATES)[number];
+type RaceState = "IDLE" | "TRAINING" | "LIVE" | "CAPTURE";
 
 const stateMeta: Record<
   RaceState,
@@ -22,6 +21,12 @@ const stateMeta: Record<
     text: "text-[var(--color-warning)]",
     ring: "border-[var(--color-warning)]/40",
   },
+  CAPTURE: {
+    label: "Capturing demos",
+    dot: "bg-[var(--color-warning)]",
+    text: "text-[var(--color-warning)]",
+    ring: "border-[var(--color-warning)]/40",
+  },
   LIVE: {
     label: "Live race",
     dot: "bg-[var(--color-accent-soft)]",
@@ -30,42 +35,73 @@ const stateMeta: Record<
   },
 };
 
-const cars = [
-  {
-    id: "A",
-    policy: "human_a · v1",
-    laps: 3,
-    totalLaps: 5,
-    bestLap: "00:42.3",
-    accent: "var(--color-accent-soft)",
-  },
-  {
-    id: "B",
-    policy: "human_b · v1",
-    laps: 2,
-    totalLaps: 5,
-    bestLap: "00:47.8",
-    accent: "var(--color-text)",
-  },
-];
+function fmtSeconds(s: number | null): string {
+  if (s === null || !Number.isFinite(s)) return "--:--.-";
+  const mm = Math.floor(s / 60);
+  const ss = (s % 60).toFixed(1).padStart(4, "0");
+  return `${String(mm).padStart(2, "0")}:${ss}`;
+}
 
-const leaderboard = [
-  { rank: 1, policy: "human_a · v1", laps: 3, bestLap: "00:42.3" },
-  { rank: 2, policy: "human_b · v1", laps: 2, bestLap: "00:47.8" },
-  { rank: 3, policy: "baseline · v0", laps: 2, bestLap: "00:51.4" },
-];
+interface CarRow {
+  id: string;
+  policy: string;
+  laps: number;
+  totalLaps: number;
+  bestLap: string;
+  accent: string;
+}
+
+interface LeaderRow {
+  rank: number;
+  policy: string;
+  laps: number;
+  bestLap: string;
+}
+
+const TOTAL_LAPS = 5;
 
 export default function LiveDashboard() {
-  const [stateIdx, setStateIdx] = useState(2);
-  const raceState = RACE_STATES[stateIdx];
+  const phase = useStream(s => s?.phase ?? "idle");
+  const polVer = useStream(s => s?.policy_version ?? null);
+  const car1 = useStream(s => s?.race.car1);
+  const car2 = useStream(s => s?.race.car2);
+
+  const raceState: RaceState =
+    phase === "race" ? "LIVE" :
+    phase === "training" ? "TRAINING" :
+    phase === "capture" ? "CAPTURE" :
+    "IDLE";
   const meta = stateMeta[raceState];
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      setStateIdx((i) => (i + 1) % RACE_STATES.length);
-    }, 12000);
-    return () => clearInterval(id);
-  }, []);
+  const cars: CarRow[] = [
+    {
+      id: "A",
+      policy: `human_a · ${polVer ?? "v0"}`,
+      laps: car1?.lap_count ?? 0,
+      totalLaps: TOTAL_LAPS,
+      bestLap: fmtSeconds(car1?.best_lap_s ?? null),
+      accent: "var(--color-accent-soft)",
+    },
+    {
+      id: "B",
+      policy: `human_b · ${polVer ?? "v0"}`,
+      laps: car2?.lap_count ?? 0,
+      totalLaps: TOTAL_LAPS,
+      bestLap: fmtSeconds(car2?.best_lap_s ?? null),
+      accent: "var(--color-text)",
+    },
+  ];
+
+  const leaderboard: LeaderRow[] = cars
+    .map((c, i) => ({
+      rank: i + 1,
+      policy: c.policy,
+      laps: c.laps,
+      bestLap: c.bestLap,
+      bestLapNum: i === 0 ? (car1?.best_lap_s ?? Infinity) : (car2?.best_lap_s ?? Infinity),
+    }))
+    .sort((a, b) => b.laps - a.laps || a.bestLapNum - b.bestLapNum)
+    .map((row, i) => ({ rank: i + 1, policy: row.policy, laps: row.laps, bestLap: row.bestLap }));
 
   return (
     <section
@@ -100,7 +136,7 @@ export default function LiveDashboard() {
         </div>
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.4fr_1fr]">
-          <Leaderboard />
+          <Leaderboard rows={leaderboard} />
           <HandCam />
         </div>
       </div>
@@ -179,7 +215,7 @@ function Metric({
   );
 }
 
-function Leaderboard() {
+function Leaderboard({ rows }: { rows: LeaderRow[] }) {
   return (
     <div className="card overflow-hidden">
       <div className="flex items-center justify-between px-5 py-4">
@@ -200,7 +236,7 @@ function Leaderboard() {
           </tr>
         </thead>
         <tbody>
-          {leaderboard.map((row, i) => (
+          {rows.map((row, i) => (
             <tr
               key={row.rank}
               className={
@@ -236,6 +272,8 @@ function Leaderboard() {
 }
 
 function HandCam() {
+  const hand = useStream(s => s?.hand ?? null);
+  const live = !!(hand && (hand.has_left || hand.has_right));
   return (
     <div className="card flex flex-col p-5">
       <div className="flex items-center justify-between">
@@ -247,16 +285,53 @@ function HandCam() {
           Source
         </span>
       </div>
-      <div className="mt-4 flex flex-1 items-center justify-center rounded-md border border-dashed border-[var(--color-border-strong)] bg-[var(--color-surface-2)]/40 p-8">
-        <div className="flex flex-col items-center text-center">
-          <HandIcon className="h-10 w-10 text-[var(--color-text-subtle)]" />
-          <div className="mt-3 text-sm text-[var(--color-text-muted)]">
-            Waiting for hand input
-          </div>
-          <div className="mt-1 text-xs text-[var(--color-text-subtle)]">
-            Connect a Leap Motion or webcam to begin.
+      {live ? (
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <HandStat label="LEFT" present={hand!.has_left} value={hand!.raw_left_size} />
+          <HandStat label="RIGHT" present={hand!.has_right} value={hand!.raw_right_size} />
+          <div className="col-span-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)]/30 p-3">
+            <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-subtle)]">
+              <span>Steer</span>
+              <span className="font-mono text-[var(--color-text)]">
+                {hand!.steer >= 0 ? `+${hand!.steer.toFixed(2)}` : hand!.steer.toFixed(2)}
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-subtle)]">
+              <span>Throttle</span>
+              <span className="font-mono text-[var(--color-text)]">
+                {hand!.throttle >= 0 ? `+${hand!.throttle.toFixed(2)}` : hand!.throttle.toFixed(2)}
+              </span>
+            </div>
           </div>
         </div>
+      ) : (
+        <div className="mt-4 flex flex-1 items-center justify-center rounded-md border border-dashed border-[var(--color-border-strong)] bg-[var(--color-surface-2)]/40 p-8">
+          <div className="flex flex-col items-center text-center">
+            <HandIcon className="h-10 w-10 text-[var(--color-text-subtle)]" />
+            <div className="mt-3 text-sm text-[var(--color-text-muted)]">
+              Waiting for hand input
+            </div>
+            <div className="mt-1 text-xs text-[var(--color-text-subtle)]">
+              Run laptop/hand_drive.py to feed live hand commands.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HandStat({ label, present, value }: { label: string; present: boolean; value: number }) {
+  return (
+    <div className={`rounded-md border p-3 ${present
+      ? 'border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5'
+      : 'border-[var(--color-border)] bg-[var(--color-surface-2)]/40'}`}>
+      <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-subtle)]">
+        <span className={`block h-2 w-2 rounded-full ${present ? 'bg-[var(--color-accent-soft)]' : 'bg-[var(--color-text-subtle)]'}`} />
+        {label}
+      </div>
+      <div className="mt-2 font-mono text-2xl text-[var(--color-text)]">
+        {present ? value.toFixed(2) : '—'}
       </div>
     </div>
   );

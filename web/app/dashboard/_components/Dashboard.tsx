@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { TopBar, SURFACE, BORDER } from './shared';
-import { ActCapture, ActClone, ActRace, ActDebug } from './acts';
+import { ActCapture, ActClone, ActRace, ActDebug } from './acts/index';
 
 interface Tweaks {
   car1Name: string;
